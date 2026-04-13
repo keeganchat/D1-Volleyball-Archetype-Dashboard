@@ -1,0 +1,593 @@
+---
+title: "PROJECT"
+author: "Avery Cutright"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(shiny)
+install.packages("shinydashboard")
+library(shinydashboard)
+install.packages("tidyverse")
+library(tidyverse)
+install.packages("DT")
+library(DT)
+install.packages("plotly")
+library(plotly)
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(out.width = "60%",fig.align='center')
+```
+
+
+
+```{r}
+library(shiny)
+library(shinydashboard)
+library(tidyverse)
+library(DT)
+library(plotly)
+
+# ── Data loading (Women's only) ───────────────────────────────────────────────
+BASE_URL <- "https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/"
+
+divs  <- c(1, 2, 3)
+years <- 2020:2024
+
+build_url <- function(div, year) {
+  paste0(BASE_URL, "wvb_playerseason_div", div, "_", year, ".csv")
+}
+
+# Raw counting stats that will be converted to per-game (per GP) rates
+per_game_stats <- c(
+  "Kills", "Errors", "Total Attacks", "Assists", "Aces",
+  "SErr", "Digs", "RErr", "Block Solos", "Block Assists",
+  "BErr", "PTS", "SrvAtt"
+)
+
+load_data <- function() {
+  combos <- expand.grid(div = divs, year = years, stringsAsFactors = FALSE)
+  dfs <- lapply(seq_len(nrow(combos)), function(i) {
+    url <- build_url(combos$div[i], combos$year[i])
+    tryCatch({
+      df <- read.csv(url, stringsAsFactors = FALSE, check.names = FALSE)
+      df$Division <- paste0("Div ", combos$div[i])
+      df
+    }, error = function(e) NULL)
+  })
+  raw <- bind_rows(Filter(Negate(is.null), dfs))
+
+  # ── Position consolidation ─────────────────────────────────────────────────
+  # MB and MH both play the middle — merge into "MB"
+  raw$Pos[raw$Pos == "MH"]  <- "MB"
+  # OPP and RS both play the right-side pin — merge into "OPP"
+  raw$Pos[raw$Pos == "RS"]  <- "OPP"
+  # Remove Libero and Libero/DS
+  raw <- raw[!raw$Pos %in% c("L", "LS"), ]
+
+  # Convert counting stats to per-game rates (divide by GP)
+  # GP must be numeric and > 0; rows with missing GP are kept but will be NA
+  raw$GP <- as.numeric(raw$GP)
+  for (col in per_game_stats) {
+    if (col %in% names(raw)) {
+      raw[[col]] <- as.numeric(raw[[col]])
+      raw[[col]] <- ifelse(is.na(raw$GP) | raw$GP == 0, NA, raw[[col]] / raw$GP)
+    }
+  }
+
+  # Hit Pct is already a rate — no conversion needed
+  raw$`Hit Pct` <- as.numeric(raw$`Hit Pct`)
+
+  raw
+}
+
+# Position labels (post-consolidation)
+pos_labels <- c(
+  "OH"  = "Outside Hitter (OH)",
+  "MB"  = "Middle Blocker/Hitter (MB)",
+  "S"   = "Setter (S)",
+  "OPP" = "Opposite/Right Side (OPP)",
+  "DS"  = "Defensive Specialist (DS)"
+)
+
+# Per-game stat choices exposed in the UI
+stat_choices <- c(
+  "Kills/G", "Errors/G", "Total Attacks/G", "Hit Pct",
+  "Assists/G", "Aces/G", "Digs/G", "Return Attempts/G",
+  "Block Solos/G", "Block Assists/G", "PTS/G"
+)
+
+# Map UI label -> column name in the data frame
+stat_col_map <- c(
+  "Kills/G"           = "Kills",
+  "Errors/G"          = "Errors",
+  "Total Attacks/G"   = "Total Attacks",
+  "Hit Pct"           = "Hit Pct",
+  "Assists/G"         = "Assists",
+  "Aces/G"            = "Aces",
+  "Digs/G"            = "Digs",
+  "Return Attempts/G" = "SrvAtt",
+  "Block Solos/G"     = "Block Solos",
+  "Block Assists/G"   = "Block Assists",
+  "PTS/G"             = "PTS"
+)
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+ui <- dashboardPage(
+  skin = "purple",
+
+  dashboardHeader(title = "NCAA Women's Volleyball"),
+
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Overview",      tabName = "overview", icon = icon("volleyball-ball")),
+      menuItem("Player Stats",  tabName = "players",  icon = icon("table")),
+      menuItem("Position Comp", tabName = "poscomp",  icon = icon("chart-bar")),
+      menuItem("Scatter Plot",  tabName = "scatter",  icon = icon("circle-dot")),
+      menuItem("Radar Chart",    tabName = "radar",    icon = icon("spider"))
+    ),
+    hr(),
+    # No sport filter — Women's only
+    checkboxGroupInput("div_filter", "Division",
+                       choices  = c("Div 1", "Div 2", "Div 3"),
+                       selected = "Div 1"),
+    selectInput("season_filter", "Season",
+                choices  = rev(paste0(2020:2024, "-", 2021:2025)),
+                selected = "2024-2025"),
+    hr(),
+    tags$small(class = "text-muted", style = "padding-left:10px;",
+               tags$em("All stats shown per game (per GP)."),
+               tags$br(),
+               "Data: JeffreyRStevens/ncaavolleyballr")
+  ),
+
+  dashboardBody(
+    tags$head(tags$style(HTML("
+      .box { border-radius: 8px; }
+      .value-box .inner h3 { font-size: 28px; }
+      .skin-purple .main-header .logo { font-weight: bold; }
+    "))),
+
+    tabItems(
+
+      # ── Overview ──────────────────────────────────────────────────────────
+      tabItem("overview",
+        fluidRow(
+          valueBoxOutput("vb_players",   width = 3),
+          valueBoxOutput("vb_teams",     width = 3),
+          valueBoxOutput("vb_positions", width = 3),
+          valueBoxOutput("vb_avg_pts",   width = 3)
+        ),
+        fluidRow(
+          box(title = "Players by Position", status = "primary", solidHeader = TRUE,
+              width = 6, plotlyOutput("pos_dist_plot", height = 340)),
+          box(title = "Avg Points per Game by Position", status = "info", solidHeader = TRUE,
+              width = 6, plotlyOutput("pos_pts_plot",  height = 340))
+        ),
+        fluidRow(
+          box(title = "Top 10 Scorers (PTS/G)", status = "warning", solidHeader = TRUE,
+              width = 12, plotlyOutput("top_scorers_plot", height = 300))
+        )
+      ),
+
+      # ── Player Stats Table ─────────────────────────────────────────────────
+      tabItem("players",
+        fluidRow(
+          box(width = 12, status = "primary",
+            fluidRow(
+              column(4, checkboxGroupInput("pos_filter", "Filter by Position",
+                                          choices  = names(pos_labels),
+                                          selected = names(pos_labels),
+                                          inline   = TRUE)),
+              column(4, selectInput("yr_filter", "Class Year",
+                                    choices  = c("All", "Fr", "So", "Jr", "Sr"),
+                                    selected = "All")),
+              column(4, numericInput("min_gp", "Min Games Played", value = 10, min = 0))
+            )
+          )
+        ),
+        fluidRow(
+          box(width = 12, title = "Player Season Statistics (per game)",
+              status = "primary", solidHeader = TRUE,
+              DTOutput("player_table"))
+        )
+      ),
+
+      # ── Position Comparison ────────────────────────────────────────────────
+      tabItem("poscomp",
+        fluidRow(
+          box(width = 4, status = "primary",
+              selectInput("comp_stat", "Statistic to Compare",
+                          choices  = stat_choices,
+                          selected = "Kills/G"),
+              radioButtons("comp_type", "Summary Type",
+                           choices  = c("Mean", "Median"),
+                           selected = "Mean", inline = TRUE),
+              checkboxGroupInput("comp_pos", "Positions to Include",
+                                 choices  = names(pos_labels),
+                                 selected = names(pos_labels))
+          ),
+          box(width = 8, title = "Position Comparison", status = "info", solidHeader = TRUE,
+              plotlyOutput("comp_plot", height = 420))
+        ),
+        fluidRow(
+          box(width = 12, title = "Distribution by Position (Violin)",
+              status = "warning", solidHeader = TRUE,
+              plotlyOutput("violin_plot", height = 380))
+        )
+      ),
+
+      # ── Scatter Plot ───────────────────────────────────────────────────────
+      tabItem("scatter",
+        fluidRow(
+          box(width = 3, status = "primary",
+              selectInput("sc_x",   "X Axis", choices = stat_choices, selected = "Kills/G"),
+              selectInput("sc_y",   "Y Axis", choices = stat_choices, selected = "Digs/G"),
+              selectInput("sc_col", "Color By (metric)",
+                          choices  = stat_choices,
+                          selected = "PTS/G"),
+              tags$small(class = "text-muted",
+                         tags$em("Shape = Position (always)")),
+              hr(),
+              checkboxGroupInput("sc_pos", "Positions",
+                                 choices  = names(pos_labels),
+                                 selected = names(pos_labels)),
+              numericInput("sc_min_gp", "Min Games Played", value = 10, min = 0)
+          ),
+          box(width = 9, title = "Player Scatter Plot (per-game stats)",
+              status = "info", solidHeader = TRUE,
+              plotlyOutput("scatter_plot", height = 520))
+        )
+      )
+    ,
+
+      # ── Radar Chart ────────────────────────────────────────────────
+      tabItem("radar",
+        fluidRow(
+          box(width = 3, status = "primary",
+              checkboxGroupInput("radar_stats", "Stats to Include",
+                                 choices  = stat_choices,
+                                 selected = c("Kills/G", "Assists/G", "Digs/G",
+                                              "Block Solos/G", "Aces/G", "Hit Pct")),
+              hr(),
+              radioButtons("radar_summary", "Summarise by",
+                           choices  = c("Mean", "Median"),
+                           selected = "Mean", inline = TRUE),
+              hr(),
+              tags$small(class = "text-muted",
+                         tags$em("Values are min-max scaled (0-1) across positions so all axes are comparable."))
+          ),
+          box(width = 9, title = "Position Radar Chart",
+              status = "info", solidHeader = TRUE,
+              plotlyOutput("radar_plot", height = 560))
+        )
+      )
+    )
+  )
+)
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server <- function(input, output, session) {
+
+  # Load Women's data once; already has per-game stats
+  raw_data <- reactive({
+    withProgress(message = "Loading NCAA Women's Volleyball data…", value = 0.1, {
+      df <- load_data()
+      incProgress(0.8)
+      df
+    })
+  })
+
+  # Apply global sidebar filters
+  filtered <- reactive({
+    df <- raw_data()
+    req(nrow(df) > 0)
+
+    if (length(input$div_filter) > 0)
+      df <- df[df$Division %in% input$div_filter, ]
+
+    if (!is.null(input$season_filter) && input$season_filter != "All")
+      df <- df[df$Season == input$season_filter, ]
+
+    df <- df[df$Pos %in% names(pos_labels), ]
+    df
+  })
+
+  # Helper: resolve a UI stat label to the data frame column name
+  col_name <- function(label) unname(stat_col_map[label])
+
+  # ── Overview value boxes ───────────────────────────────────────────────────
+  output$vb_players <- renderValueBox({
+    valueBox(nrow(filtered()), "Players", icon = icon("users"), color = "purple")
+  })
+  output$vb_teams <- renderValueBox({
+    valueBox(n_distinct(filtered()$Team), "Teams", icon = icon("trophy"), color = "blue")
+  })
+  output$vb_positions <- renderValueBox({
+    valueBox(n_distinct(filtered()$Pos), "Positions", icon = icon("layer-group"), color = "orange")
+  })
+  output$vb_avg_pts <- renderValueBox({
+    avg <- round(mean(filtered()$PTS, na.rm = TRUE), 2)
+    valueBox(avg, "Avg PTS/Game", icon = icon("star"), color = "green")
+  })
+
+  # Players by position bar chart
+  output$pos_dist_plot <- renderPlotly({
+    df <- filtered() %>% count(Pos) %>% arrange(desc(n))
+    plot_ly(df, x = ~Pos, y = ~n, type = "bar",
+            marker = list(color = "#7b2d8b")) %>%
+      layout(xaxis = list(title = "Position"),
+             yaxis = list(title = "# Players"),
+             plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)")
+  })
+
+  # Avg PTS/G by position
+  output$pos_pts_plot <- renderPlotly({
+    df <- filtered() %>%
+      group_by(Pos) %>%
+      summarise(avg_pts = mean(PTS, na.rm = TRUE), .groups = "drop") %>%
+      arrange(desc(avg_pts))
+    plot_ly(df, x = ~reorder(Pos, avg_pts), y = ~avg_pts, type = "bar",
+            marker = list(color = "#1a9641")) %>%
+      layout(xaxis = list(title = "Position"),
+             yaxis = list(title = "Avg PTS/G"),
+             plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)")
+  })
+
+  # Top 10 scorers by PTS/G
+  output$top_scorers_plot <- renderPlotly({
+    df <- filtered() %>%
+      filter(!is.na(PTS), GP >= 5) %>%
+      arrange(desc(PTS)) %>%
+      slice_head(n = 10)
+    plot_ly(df, x = ~reorder(Player, PTS), y = ~PTS, type = "bar",
+            color = ~Pos,
+            text  = ~paste0(Player, "\n", Team, " (", Pos, ")"),
+            hoverinfo = "text+y") %>%
+      layout(xaxis = list(title = "", tickangle = -30),
+             yaxis = list(title = "PTS/G"),
+             plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)")
+  })
+
+  # ── Player stats table ─────────────────────────────────────────────────────
+  output$player_table <- renderDT({
+    df <- filtered()
+    if (length(input$pos_filter) > 0) df <- df[df$Pos %in% input$pos_filter, ]
+    if (input$yr_filter != "All")     df <- df[df$Yr  == input$yr_filter, ]
+    df <- df[!is.na(df$GP) & df$GP >= input$min_gp, ]
+
+    # Round per-game columns to 3 decimal places for display
+    pg_cols <- intersect(per_game_stats, names(df))
+    df[pg_cols] <- lapply(df[pg_cols], function(x) round(x, 3))
+
+    display_cols <- c("Season", "Player", "Team", "Conference", "Yr", "Pos",
+                      "Division", "GP", "S",
+                      "Kills", "Hit Pct", "Assists", "Aces",
+                      "Digs", "Block Solos", "Block Assists", "PTS")
+    display_cols <- intersect(display_cols, names(df))
+
+    # Rename columns to make the per-game nature obvious
+    pg_rename <- c(Kills = "Kills/G", Assists = "Assists/G", Aces = "Aces/G",
+                   Digs = "Digs/G", PTS = "PTS/G",
+                   "Block Solos" = "BlkSolo/G", "Block Assists" = "BlkAst/G")
+    colnames_display <- ifelse(display_cols %in% names(pg_rename),
+                               pg_rename[display_cols], display_cols)
+
+    out <- df[, display_cols]
+    names(out) <- colnames_display
+
+    datatable(out,
+              filter  = "top",
+              options = list(pageLength = 15, scrollX = TRUE,
+                             order = list(list(which(colnames_display == "PTS/G") - 1, "desc"))),
+              rownames = FALSE) %>%
+      formatStyle("Pos",
+                  backgroundColor = styleEqual(
+                    names(pos_labels),
+                    c("#e41a1c","#377eb8","#984ea3","#ff7f00","#4daf4a")
+                  ),
+                  color = "white", fontWeight = "bold", borderRadius = "4px")
+  })
+
+  # ── Position comparison ────────────────────────────────────────────────────
+  output$comp_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$comp_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$comp_pos, ]
+    cname <- col_name(input$comp_stat)
+
+    summary_df <- df %>%
+      group_by(Pos) %>%
+      summarise(val = if (input$comp_type == "Mean")
+                        mean(get(cname),   na.rm = TRUE)
+                      else
+                        median(get(cname), na.rm = TRUE),
+                n = n(), .groups = "drop") %>%
+      arrange(desc(val))
+
+    plot_ly(summary_df, x = ~reorder(Pos, val), y = ~val, type = "bar",
+            color = ~Pos, text = ~paste0("n=", n), textposition = "outside") %>%
+      layout(title = paste(input$comp_type, input$comp_stat, "by Position"),
+             xaxis = list(title = "Position"),
+             yaxis = list(title = paste(input$comp_type, input$comp_stat)),
+             showlegend = FALSE,
+             plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)")
+  })
+
+  output$violin_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$comp_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$comp_pos, ]
+    cname <- col_name(input$comp_stat)
+    df <- df[!is.na(df[[cname]]), ]
+
+    plot_ly(df, x = ~Pos, y = ~get(cname), type = "violin",
+            color = ~Pos, box = list(visible = TRUE),
+            meanline = list(visible = TRUE),
+            points = "outliers") %>%
+      layout(xaxis = list(title = "Position"),
+             yaxis = list(title = input$comp_stat),
+             showlegend = FALSE,
+             plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)")
+  })
+
+  # ── Scatter plot ─────────────────────────────────────────────
+  output$scatter_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$sc_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$sc_pos, ]
+    df <- df[!is.na(df$GP) & df$GP >= input$sc_min_gp, ]
+
+    cx  <- col_name(input$sc_x)
+    cy  <- col_name(input$sc_y)
+    cz  <- col_name(input$sc_col)   # continuous color metric
+    df  <- df[!is.na(df[[cx]]) & !is.na(df[[cy]]) & !is.na(df[[cz]]), ]
+
+    # One distinct Plotly symbol per position
+    pos_symbols <- c(
+      "OH"  = "circle",
+      "MB"  = "square",
+      "S"   = "triangle-up",
+      "OPP" = "diamond",
+      "DS"  = "cross"
+    )
+
+    # Color is a continuous numeric metric: use a shared colorscale so the
+    # gradient is consistent across all position traces.
+    col_vals  <- df[[cz]]
+    col_range <- range(col_vals, na.rm = TRUE)
+
+    # One trace per position (no need to loop over color levels since color
+    # is now continuous — each point gets its own numeric color value)
+    positions <- sort(unique(df$Pos))
+    p <- plot_ly(type = "scatter", mode = "markers")
+
+    for (pos in positions) {
+      sub <- df[df$Pos == pos, ]
+      if (nrow(sub) == 0) next
+      p <- add_trace(p,
+        data        = sub,
+        x           = ~get(cx),
+        y           = ~get(cy),
+        name        = pos,
+        legendgroup = pos,
+        showlegend  = TRUE,
+        text        = ~paste0("<b>", Player, "</b><br>",
+                              Team, " | ", Pos, " | ", Yr, "<br>",
+                              input$sc_x,  ": ", round(get(cx),  3), "<br>",
+                              input$sc_y,  ": ", round(get(cy),  3), "<br>",
+                              input$sc_col,": ", round(get(cz),  3)),
+        hoverinfo   = "text",
+        marker      = list(
+          symbol    = pos_symbols[[pos]],
+          color     = ~get(cz),          # numeric vector -> continuous gradient
+          colorscale = "Viridis",
+          cmin      = col_range[1],
+          cmax      = col_range[2],
+          showscale = (pos == positions[1]),  # show colorbar only once
+          colorbar  = list(title = input$sc_col),
+          size      = 9,
+          opacity   = 0.8,
+          line      = list(width = 0.5, color = "rgba(255,255,255,0.5)")
+        )
+      )
+    }
+
+    p %>% layout(
+      xaxis  = list(title = input$sc_x),
+      yaxis  = list(title = input$sc_y),
+      legend = list(title = list(text = "<b>Shape = Position</b>")),
+      plot_bgcolor  = "rgba(0,0,0,0)",
+      paper_bgcolor = "rgba(0,0,0,0)"
+    )
+  })
+
+  # ── Radar chart ─────────────────────────────────────────────
+  output$radar_plot <- renderPlotly({
+    df <- filtered()
+    req(length(input$radar_stats) >= 3)   # need at least 3 axes for a radar
+
+    # Resolve UI labels to column names
+    stat_cols <- stat_col_map[input$radar_stats]
+
+    # Compute mean or median per position for each selected stat
+    summary_fn <- if (input$radar_summary == "Mean") mean else median
+    radar_df <- df %>%
+      filter(Pos %in% names(pos_labels)) %>%
+      group_by(Pos) %>%
+      summarise(across(all_of(unname(stat_cols)),
+                        ~summary_fn(.x, na.rm = TRUE)),
+                .groups = "drop")
+
+    # Min-max scale each stat column across positions (0 = lowest, 1 = highest)
+    # so axes with very different magnitudes (e.g. Digs vs Hit Pct) are comparable
+    for (col in unname(stat_cols)) {
+      rng <- range(radar_df[[col]], na.rm = TRUE)
+      if (diff(rng) == 0) {
+        radar_df[[col]] <- 0.5   # all positions identical: place at mid-scale
+      } else {
+        radar_df[[col]] <- (radar_df[[col]] - rng[1]) / diff(rng)
+      }
+    }
+
+    # Plotly scatterpolar needs the first point repeated to close the polygon
+    theta_labels <- input$radar_stats   # UI labels as axis names
+
+    pos_colors <- c(
+      "OH"  = "#e41a1c",
+      "MB"  = "#377eb8",
+      "S"   = "#984ea3",
+      "OPP" = "#ff7f00",
+      "DS"  = "#4daf4a"
+    )
+
+    p <- plot_ly(type = "scatterpolar", mode = "lines+markers", fill = "toself")
+
+    for (pos in radar_df$Pos) {
+      row    <- radar_df[radar_df$Pos == pos, unname(stat_cols), drop = FALSE]
+      values <- as.numeric(row)
+      # Close the polygon by repeating the first value
+      values_closed <- c(values, values[1])
+      theta_closed  <- c(theta_labels, theta_labels[1])
+
+      p <- add_trace(p,
+        r       = values_closed,
+        theta   = theta_closed,
+        name    = pos,
+        line    = list(color = pos_colors[[pos]], width = 2),
+        marker  = list(color = pos_colors[[pos]], size = 6),
+        fillcolor = paste0(
+          # convert hex to rgba with transparency
+          "rgba(",
+          paste(strtoi(c(substr(pos_colors[[pos]], 2, 3),
+                         substr(pos_colors[[pos]], 4, 5),
+                         substr(pos_colors[[pos]], 6, 7)), 16L),
+                collapse = ","),
+          ",0.12)"
+        )
+      )
+    }
+
+    p %>% layout(
+      polar  = list(
+        radialaxis = list(
+          visible = TRUE,
+          range   = c(0, 1),
+          tickvals = c(0, 0.25, 0.5, 0.75, 1),
+          ticktext = c("0", "0.25", "0.5", "0.75", "1")
+        )
+      ),
+      legend = list(title = list(text = "<b>Position</b>")),
+      plot_bgcolor  = "rgba(0,0,0,0)",
+      paper_bgcolor = "rgba(0,0,0,0)"
+    )
+  })
+}
+
+shinyApp(ui, server)
+```
+
+
