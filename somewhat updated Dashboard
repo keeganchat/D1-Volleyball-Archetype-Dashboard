@@ -1,0 +1,1015 @@
+{r}
+# ── NCAA Women's Volleyball Dashboard ────────────────────────────────────────
+# Packages
+library(shiny)
+library(shinydashboard)
+library(dplyr)
+library(plotly)
+library(DT)
+
+# ── Data helpers ──────────────────────────────────────────────────────────────
+BASE_URL <- "https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/"
+divs  <- c(1, 2, 3)
+years <- 2020:2024
+build_url <- function(div, year) {
+  paste0(BASE_URL, "wvb_playerseason_div", div, "_", year, ".csv")
+}
+
+per_game_stats <- c(
+  "Kills", "Errors", "Total Attacks", "Assists", "Aces",
+  "SErr", "Digs", "RErr", "Block Solos", "Block Assists",
+  "BErr", "PTS", "SrvAtt"
+)
+
+load_data <- function() {
+  combos <- expand.grid(div = divs, year = years, stringsAsFactors = FALSE)
+  dfs <- lapply(seq_len(nrow(combos)), function(i) {
+    url <- build_url(combos$div[i], combos$year[i])
+    tryCatch({
+      df <- read.csv(url, stringsAsFactors = FALSE, check.names = FALSE)
+      df$Division <- paste0("Div ", combos$div[i])
+      df
+    }, error = function(e) NULL)
+  })
+  raw <- bind_rows(Filter(Negate(is.null), dfs))
+  raw$Pos[raw$Pos == "MH"]  <- "MB"
+  raw$Pos[raw$Pos == "RS"]  <- "OPP"
+  raw$Pos[raw$Pos == "LS"]  <- "L"   # Libero/Specialist -> Libero
+  raw$GP <- as.numeric(raw$GP)
+  for (col in per_game_stats) {
+    if (col %in% names(raw)) {
+      raw[[col]] <- as.numeric(raw[[col]])
+      raw[[col]] <- ifelse(is.na(raw$GP) | raw$GP == 0, NA, raw[[col]] / raw$GP)
+    }
+  }
+  raw$`Hit Pct` <- as.numeric(raw$`Hit Pct`)
+  raw
+}
+
+pos_labels <- c(
+  "OH"  = "Outside Hitter (OH)",
+  "MB"  = "Middle Blocker/Hitter (MB)",
+  "S"   = "Setter (S)",
+  "OPP" = "Opposite/Right Side (OPP)",
+  "DS"  = "Defensive Specialist / Libero (DS/L)",
+  "L"   = "Libero (L)"
+)
+
+stat_choices <- c(
+  "Kills/G", "Errors/G", "Total Attacks/G", "Hit Pct",
+  "Assists/G", "Aces/G", "Digs/G", "Return Attempts/G",
+  "Block Solos/G", "Block Assists/G", "PTS/G"
+)
+
+stat_col_map <- c(
+  "Kills/G"           = "Kills",
+  "Errors/G"          = "Errors",
+  "Total Attacks/G"   = "Total Attacks",
+  "Hit Pct"           = "Hit Pct",
+  "Assists/G"         = "Assists",
+  "Aces/G"            = "Aces",
+  "Digs/G"            = "Digs",
+  "Return Attempts/G" = "SrvAtt",
+  "Block Solos/G"     = "Block Solos",
+  "Block Assists/G"   = "Block Assists",
+  "PTS/G"             = "PTS"
+)
+
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+custom_css <- "
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500;600&display=swap');
+
+:root {
+  --navy:      #0a0e1a;
+  --navy-mid:  #111827;
+  --navy-card: #161d2e;
+  --navy-lite: #1e2a3e;
+  --border:    #2a3a52;
+  --gold:      #f5c518;
+  --gold-dim:  #c9a214;
+  --teal:      #00d4b4;
+  --coral:     #ff5f57;
+  --purple:    #9b5de5;
+  --text-hi:   #f0f4ff;
+  --text-mid:  #8fa3c0;
+  --text-lo:   #4a5f7a;
+  --grad-h:    linear-gradient(135deg, #0d1b35 0%, #0a2040 50%, #061226 100%);
+}
+
+/* ── Reset & Base ── */
+* { box-sizing: border-box; }
+
+body, .wrapper {
+  background: var(--navy) !important;
+  font-family: 'Barlow', sans-serif !important;
+  color: var(--text-hi) !important;
+}
+
+/* ── Header ── */
+.main-header .navbar,
+.main-header .logo {
+  background: linear-gradient(90deg, #0a0e1a 0%, #0d1525 100%) !important;
+  border-bottom: 2px solid var(--gold) !important;
+  box-shadow: 0 4px 24px rgba(245,197,24,0.12) !important;
+}
+
+.main-header .logo {
+  font-family: 'Barlow Condensed', sans-serif !important;
+  font-weight: 800 !important;
+  font-size: 18px !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  color: var(--gold) !important;
+  border-right: 1px solid var(--border) !important;
+}
+
+.main-header .logo span { color: var(--text-hi); }
+
+.main-header .navbar .sidebar-toggle {
+  color: var(--text-mid) !important;
+}
+.main-header .navbar .sidebar-toggle:hover {
+  background: rgba(245,197,24,0.1) !important;
+  color: var(--gold) !important;
+}
+
+/* ── Sidebar ── */
+.main-sidebar {
+  background: var(--navy-mid) !important;
+  border-right: 1px solid var(--border) !important;
+}
+
+.sidebar-menu > li > a {
+  font-family: 'Barlow Condensed', sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.8px !important;
+  text-transform: uppercase !important;
+  color: var(--text-mid) !important;
+  border-left: 3px solid transparent !important;
+  padding: 12px 16px !important;
+  transition: all 0.2s ease !important;
+}
+.sidebar-menu > li > a:hover,
+.sidebar-menu > li.active > a {
+  background: rgba(245,197,24,0.06) !important;
+  color: var(--gold) !important;
+  border-left-color: var(--gold) !important;
+}
+.sidebar-menu > li > a i {
+  color: inherit !important;
+  margin-right: 10px !important;
+}
+
+/* Sidebar section labels */
+.sidebar-menu > li.header {
+  font-family: 'Barlow Condensed', sans-serif !important;
+  font-size: 11px !important;
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  color: var(--text-lo) !important;
+  padding: 14px 16px 6px !important;
+}
+
+/* Sidebar controls */
+.sidebar .shiny-input-container label,
+.sidebar .control-label {
+  font-family: 'Barlow Condensed', sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  color: var(--text-lo) !important;
+  display: block !important;
+  margin-bottom: 6px !important;
+}
+
+.sidebar .checkbox label,
+.sidebar .radio label {
+  color: var(--text-mid) !important;
+  font-size: 13px !important;
+  font-family: 'Barlow', sans-serif !important;
+}
+.sidebar .checkbox input[type=checkbox]:checked + span,
+.sidebar .radio input[type=radio]:checked + span {
+  color: var(--gold) !important;
+}
+
+.sidebar select,
+.sidebar .form-control {
+  background: var(--navy-card) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-hi) !important;
+  border-radius: 6px !important;
+  font-family: 'Barlow', sans-serif !important;
+  font-size: 13px !important;
+  padding: 6px 10px !important;
+  width: 100% !important;
+}
+.sidebar select:focus,
+.sidebar .form-control:focus {
+  border-color: var(--gold) !important;
+  box-shadow: 0 0 0 2px rgba(245,197,24,0.15) !important;
+  outline: none !important;
+}
+
+.sidebar hr {
+  border-color: var(--border) !important;
+  margin: 12px 10px !important;
+}
+
+.sidebar .text-muted {
+  color: var(--text-lo) !important;
+  font-size: 11px !important;
+  line-height: 1.5 !important;
+  display: block !important;
+}
+
+/* ── Main content area ── */
+.content-wrapper {
+  background: var(--grad-h) !important;
+  background-attachment: fixed !important;
+  min-height: 100vh !important;
+}
+
+.content { padding: 20px !important; }
+
+/* ── Boxes ── */
+.box {
+  background: var(--navy-card) !important;
+  border: 1px solid var(--border) !important;
+  border-top: none !important;
+  border-radius: 10px !important;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4) !important;
+  overflow: hidden !important;
+}
+
+.box-header {
+  background: transparent !important;
+  border-bottom: 1px solid var(--border) !important;
+  padding: 14px 18px !important;
+}
+
+.box-header .box-title {
+  font-family: 'Barlow Condensed', sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  color: var(--text-hi) !important;
+}
+
+.box.box-solid.box-primary > .box-header {
+  background: linear-gradient(90deg, rgba(0,212,180,0.15), transparent) !important;
+  border-left: 3px solid var(--teal) !important;
+}
+.box.box-solid.box-info > .box-header {
+  background: linear-gradient(90deg, rgba(155,93,229,0.15), transparent) !important;
+  border-left: 3px solid var(--purple) !important;
+}
+.box.box-solid.box-warning > .box-header {
+  background: linear-gradient(90deg, rgba(245,197,24,0.15), transparent) !important;
+  border-left: 3px solid var(--gold) !important;
+}
+
+.box-body { padding: 16px !important; }
+
+/* Non-solid boxes (filter boxes) */
+.box:not([class*='box-solid']) > .box-header {
+  background: rgba(255,255,255,0.02) !important;
+}
+
+/* ── Value Boxes ── */
+.value-box {
+  border-radius: 10px !important;
+  overflow: hidden !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.35) !important;
+  transition: transform 0.2s ease, box-shadow 0.2s ease !important;
+}
+.value-box:hover {
+  transform: translateY(-3px) !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5) !important;
+}
+
+.value-box .inner {
+  padding: 18px 20px 14px !important;
+}
+.value-box .inner h3 {
+  font-family: 'Barlow Condensed', sans-serif !important;
+  font-size: 42px !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  letter-spacing: -0.5px !important;
+  margin: 0 0 4px !important;
+}
+.value-box .inner p {
+  font-family: 'Barlow Condensed', sans-serif !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  opacity: 0.85 !important;
+  margin: 0 !important;
+}
+.value-box .icon { opacity: 0.2 !important; }
+.value-box .icon i { font-size: 65px !important; }
+
+/* Value box color overrides */
+.bg-purple, .value-box.bg-purple { background: linear-gradient(135deg, #5b21b6, #7c3aed) !important; }
+.bg-blue,   .value-box.bg-blue   { background: linear-gradient(135deg, #0369a1, #0284c7) !important; }
+.bg-orange, .value-box.bg-orange { background: linear-gradient(135deg, #c2410c, #ea580c) !important; }
+.bg-green,  .value-box.bg-green  { background: linear-gradient(135deg, #15803d, #16a34a) !important; }
+
+/* ── Inputs in main body ── */
+.shiny-input-container label,
+.control-label {
+  font-family: 'Barlow Condensed', sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  color: var(--text-lo) !important;
+  margin-bottom: 5px !important;
+}
+
+.form-control,
+select.form-control {
+  background: var(--navy-lite) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-hi) !important;
+  border-radius: 6px !important;
+  font-family: 'Barlow', sans-serif !important;
+  font-size: 13px !important;
+}
+.form-control:focus {
+  border-color: var(--teal) !important;
+  box-shadow: 0 0 0 2px rgba(0,212,180,0.15) !important;
+}
+
+/* Radio & checkbox (body) */
+.radio label, .checkbox label {
+  color: var(--text-mid) !important;
+  font-family: 'Barlow', sans-serif !important;
+  font-size: 13px !important;
+}
+
+/* Numeric input */
+.form-group input[type=number] {
+  background: var(--navy-lite) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-hi) !important;
+  border-radius: 6px !important;
+}
+
+/* ── DataTables ── */
+.dataTables_wrapper {
+  font-family: 'Barlow', sans-serif !important;
+  color: var(--text-mid) !important;
+}
+
+table.dataTable {
+  background: transparent !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  width: 100% !important;
+}
+table.dataTable thead th {
+  background: var(--navy-lite) !important;
+  color: var(--text-lo) !important;
+  font-family: 'Barlow Condensed', sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  border-bottom: 2px solid var(--border) !important;
+  border-top: none !important;
+  padding: 10px 12px !important;
+}
+table.dataTable thead th:hover {
+  background: var(--navy-card) !important;
+  color: var(--gold) !important;
+}
+table.dataTable tbody tr {
+  background: transparent !important;
+  transition: background 0.15s ease !important;
+}
+table.dataTable tbody tr:hover {
+  background: rgba(0,212,180,0.05) !important;
+}
+table.dataTable tbody tr:nth-child(even) {
+  background: rgba(255,255,255,0.015) !important;
+}
+table.dataTable tbody tr:nth-child(even):hover {
+  background: rgba(0,212,180,0.05) !important;
+}
+table.dataTable tbody td {
+  border-top: 1px solid rgba(42,58,82,0.5) !important;
+  color: var(--text-mid) !important;
+  font-size: 13px !important;
+  padding: 9px 12px !important;
+}
+table.dataTable tbody td:first-child { color: var(--text-hi) !important; }
+
+.dataTables_filter input {
+  background: var(--navy-lite) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-hi) !important;
+  border-radius: 6px !important;
+  padding: 5px 10px !important;
+  font-family: 'Barlow', sans-serif !important;
+  font-size: 13px !important;
+  margin-left: 6px !important;
+}
+.dataTables_filter label,
+.dataTables_length label,
+.dataTables_info {
+  color: var(--text-lo) !important;
+  font-size: 12px !important;
+}
+.dataTables_length select {
+  background: var(--navy-lite) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-hi) !important;
+  border-radius: 4px !important;
+  padding: 3px 6px !important;
+}
+.dataTables_paginate .paginate_button {
+  background: var(--navy-lite) !important;
+  color: var(--text-mid) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 5px !important;
+  margin: 0 2px !important;
+  padding: 4px 10px !important;
+  font-size: 12px !important;
+  transition: all 0.15s !important;
+}
+.dataTables_paginate .paginate_button:hover {
+  background: var(--navy-card) !important;
+  color: var(--teal) !important;
+  border-color: var(--teal) !important;
+}
+.dataTables_paginate .paginate_button.current {
+  background: var(--teal) !important;
+  color: var(--navy) !important;
+  border-color: var(--teal) !important;
+  font-weight: 600 !important;
+}
+/* Filter row inputs */
+.dataTables_wrapper thead input,
+.dataTables_wrapper thead select {
+  background: var(--navy-lite) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-hi) !important;
+  border-radius: 4px !important;
+  font-size: 11px !important;
+  width: 100% !important;
+  padding: 3px 6px !important;
+}
+
+/* ── Plotly charts ── */
+.plotly .bg { fill: transparent !important; }
+
+/* ── Loading spinner ── */
+.shiny-notification {
+  background: var(--navy-card) !important;
+  border: 1px solid var(--border) !important;
+  border-left: 3px solid var(--teal) !important;
+  border-radius: 8px !important;
+  color: var(--text-hi) !important;
+  font-family: 'Barlow Condensed', sans-serif !important;
+  letter-spacing: 0.5px !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5) !important;
+}
+
+/* ── Tab items ── */
+.tab-content { padding: 0 !important; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--navy-mid); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-lo); }
+
+/* ── Progress bar ── */
+.progress-bar { background-color: var(--teal) !important; }
+.progress { background-color: var(--navy-lite) !important; border-radius: 4px !important; }
+
+/* ── Fluid row spacing ── */
+.row { margin-bottom: 0 !important; }
+.col-sm-12, .col-md-6, .col-md-4, .col-md-8, .col-md-3, .col-md-9 {
+  padding: 8px !important;
+}
+
+/* ── Accent line under page title implied by tab ── */
+.content-header { display: none !important; }
+"
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+ui <- dashboardPage(
+  skin = "black",
+
+  dashboardHeader(
+    title = tags$span(
+      tags$span(style = "color:#f5c518; font-family:'Barlow Condensed',sans-serif; font-weight:800; letter-spacing:1px;", "NCAA"),
+      tags$span(style = "color:#f0f4ff; font-family:'Barlow Condensed',sans-serif; font-weight:600; letter-spacing:1px; margin-left:6px;", "Women's Volleyball")
+    )
+  ),
+
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Overview",      tabName = "overview", icon = icon("chart-line")),
+      menuItem("Player Stats",  tabName = "players",  icon = icon("table")),
+      menuItem("Position Comp", tabName = "poscomp",  icon = icon("chart-bar")),
+      menuItem("Scatter Plot",  tabName = "scatter",  icon = icon("circle-dot"))
+    ),
+    tags$hr(),
+    tags$div(style = "padding: 0 10px;",
+      checkboxGroupInput("div_filter", "Division",
+                         choices  = c("Div 1", "Div 2", "Div 3"),
+                         selected = "Div 1"),
+      selectInput("season_filter", "Season",
+                  choices  = rev(paste0(2020:2024, "-", 2021:2025)),
+                  selected = "2024-2025")
+    ),
+    tags$hr(),
+    tags$div(class = "text-muted", style = "padding: 4px 14px 12px;",
+      tags$em("All stats shown per game (per GP)."),
+      tags$br(), tags$br(),
+      "Data: JeffreyRStevens/ncaavolleyballr"
+    )
+  ),
+
+  dashboardBody(
+    tags$head(
+      tags$style(HTML(custom_css)),
+      tags$link(rel = "stylesheet",
+                href = "https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500;600&display=swap")
+    ),
+
+    tabItems(
+
+      # ── Overview ──────────────────────────────────────────────────────────
+      tabItem("overview",
+        fluidRow(
+          valueBoxOutput("vb_players",   width = 3),
+          valueBoxOutput("vb_teams",     width = 3),
+          valueBoxOutput("vb_positions", width = 3),
+          valueBoxOutput("vb_avg_pts",   width = 3)
+        ),
+        fluidRow(
+          box(title = "Players by Position", status = "primary", solidHeader = TRUE,
+              width = 6, plotlyOutput("pos_dist_plot", height = 320)),
+          box(title = "Avg Points per Game by Position", status = "info", solidHeader = TRUE,
+              width = 6, plotlyOutput("pos_pts_plot", height = 320))
+        ),
+        fluidRow(
+          box(title = "Top 10 Scorers — PTS/G", status = "warning", solidHeader = TRUE,
+              width = 12, plotlyOutput("top_scorers_plot", height = 300))
+        )
+      ),
+
+      # ── Player Stats Table ─────────────────────────────────────────────────
+      tabItem("players",
+        fluidRow(
+          box(width = 12, status = "primary",
+            fluidRow(
+              column(4,
+                checkboxGroupInput("pos_filter", "Filter by Position",
+                                   choices  = names(pos_labels),
+                                   selected = names(pos_labels),
+                                   inline   = TRUE)
+              ),
+              column(4,
+                selectInput("yr_filter", "Class Year",
+                            choices  = c("All", "Fr", "So", "Jr", "Sr"),
+                            selected = "All")
+              ),
+              column(4,
+                numericInput("min_gp", "Min Games Played", value = 10, min = 0)
+              )
+            )
+          )
+        ),
+        fluidRow(
+          box(width = 12, title = "Player Season Statistics — per game",
+              status = "primary", solidHeader = TRUE,
+              DTOutput("player_table"))
+        )
+      ),
+
+      # ── Position Comparison ────────────────────────────────────────────────
+      tabItem("poscomp",
+        fluidRow(
+          box(width = 4, status = "primary",
+              selectInput("comp_stat", "Statistic to Compare",
+                          choices = stat_choices, selected = "Kills/G"),
+              radioButtons("comp_type", "Summary Type",
+                           choices  = c("Mean", "Median"),
+                           selected = "Mean", inline = TRUE),
+              checkboxGroupInput("comp_pos", "Positions to Include",
+                                 choices  = names(pos_labels),
+                                 selected = names(pos_labels))
+          ),
+          box(width = 8, title = "Position Comparison", status = "info", solidHeader = TRUE,
+              plotlyOutput("comp_plot", height = 400))
+        ),
+        fluidRow(
+          box(width = 12, title = "Distribution by Position — Violin",
+              status = "warning", solidHeader = TRUE,
+              plotlyOutput("violin_plot", height = 360))
+        )
+      ),
+
+      # ── Scatter Plot ───────────────────────────────────────────────────────
+      tabItem("scatter",
+        fluidRow(
+          box(width = 3, status = "primary",
+              selectInput("sc_x",   "X Axis", choices = stat_choices, selected = "Kills/G"),
+              selectInput("sc_y",   "Y Axis", choices = stat_choices, selected = "Digs/G"),
+              selectInput("sc_col", "Color By (metric)",
+                          choices = stat_choices, selected = "PTS/G"),
+              tags$p(class = "text-muted", style = "font-size:11px; margin-top:6px;",
+                     tags$em("Shape = Position")),
+              tags$hr(),
+              checkboxGroupInput("sc_pos", "Positions",
+                                 choices  = names(pos_labels),
+                                 selected = names(pos_labels)),
+              numericInput("sc_min_gp", "Min Games Played", value = 10, min = 0)
+          ),
+          box(width = 9, title = "Player Scatter — per-game stats",
+              status = "info", solidHeader = TRUE,
+              plotlyOutput("scatter_plot", height = 500))
+        )
+      )
+    )
+  )
+)
+
+# ── Plotly dark theme defaults ─────────────────────────────────────────────
+plotly_layout <- function(p, ...) {
+  p %>% layout(
+    plot_bgcolor  = "rgba(0,0,0,0)",
+    paper_bgcolor = "rgba(0,0,0,0)",
+    font  = list(family = "Barlow, sans-serif", color = "#8fa3c0", size = 12),
+    xaxis = list(
+      gridcolor    = "rgba(42,58,82,0.6)",
+      zerolinecolor = "rgba(42,58,82,0.8)",
+      tickfont = list(family = "Barlow, sans-serif", size = 11, color = "#8fa3c0"),
+      titlefont = list(family = "Barlow Condensed, sans-serif", size = 13, color = "#8fa3c0")
+    ),
+    yaxis = list(
+      gridcolor    = "rgba(42,58,82,0.6)",
+      zerolinecolor = "rgba(42,58,82,0.8)",
+      tickfont = list(family = "Barlow, sans-serif", size = 11, color = "#8fa3c0"),
+      titlefont = list(family = "Barlow Condensed, sans-serif", size = 13, color = "#8fa3c0")
+    ),
+    legend = list(
+      bgcolor = "rgba(22,29,46,0.8)",
+      bordercolor = "rgba(42,58,82,0.8)",
+      borderwidth = 1,
+      font = list(family = "Barlow Condensed, sans-serif", size = 12, color = "#8fa3c0")
+    ),
+    hoverlabel = list(
+      bgcolor = "#0a0e1a",
+      bordercolor = "#2a3a52",
+      font = list(family = "Barlow, sans-serif", size = 12, color = "#f0f4ff")
+    ),
+    margin = list(t = 20, b = 50, l = 50, r = 20),
+    ...
+  )
+}
+
+# Position color palette
+pos_colors <- c(
+  "OH"  = "#00d4b4",
+  "MB"  = "#f5c518",
+  "S"   = "#9b5de5",
+  "OPP" = "#ff5f57",
+  "DS"  = "#60a5fa",
+  "L"   = "#f97316"
+)
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server <- function(input, output, session) {
+
+  raw_data <- reactive({
+    withProgress(message = "Loading NCAA Women's Volleyball data…", value = 0.1, {
+      df <- load_data()
+      incProgress(0.8)
+      df
+    })
+  })
+
+  filtered <- reactive({
+    df <- raw_data()
+    req(nrow(df) > 0)
+    if (length(input$div_filter) > 0)
+      df <- df[df$Division %in% input$div_filter, ]
+    if (!is.null(input$season_filter) && input$season_filter != "All")
+      df <- df[df$Season == input$season_filter, ]
+    df <- df[df$Pos %in% names(pos_labels), ]
+    df
+  })
+
+  col_name <- function(label) unname(stat_col_map[label])
+
+  # ── Value Boxes ──────────────────────────────────────────────────────────
+  output$vb_players <- renderValueBox({
+    valueBox(
+      format(nrow(filtered()), big.mark = ","),
+      "PLAYERS", icon = icon("users"), color = "purple"
+    )
+  })
+  output$vb_teams <- renderValueBox({
+    valueBox(
+      format(n_distinct(filtered()$Team), big.mark = ","),
+      "TEAMS", icon = icon("trophy"), color = "blue"
+    )
+  })
+  output$vb_positions <- renderValueBox({
+    valueBox(
+      n_distinct(filtered()$Pos),
+      "POSITIONS", icon = icon("layer-group"), color = "orange"
+    )
+  })
+  output$vb_avg_pts <- renderValueBox({
+    avg <- round(mean(filtered()$PTS, na.rm = TRUE), 2)
+    valueBox(avg, "AVG PTS/GAME", icon = icon("star"), color = "green")
+  })
+
+  # ── Overview plots ───────────────────────────────────────────────────────
+  output$pos_dist_plot <- renderPlotly({
+    df <- filtered() %>% count(Pos) %>% arrange(desc(n))
+    colors <- pos_colors[df$Pos]
+    p <- plot_ly(df, x = ~Pos, y = ~n, type = "bar",
+                 marker = list(color = colors,
+                               line = list(color = "rgba(0,0,0,0)", width = 0)),
+                 text = ~n, textposition = "outside",
+                 textfont = list(family = "Barlow Condensed", size = 13, color = "#f0f4ff"),
+                 hovertemplate = "<b>%{x}</b><br>Players: %{y}<extra></extra>")
+    plotly_layout(p,
+                  xaxis = list(title = "", gridcolor = "rgba(0,0,0,0)",
+                               tickfont = list(family = "Barlow Condensed", size = 13, color = "#8fa3c0")),
+                  yaxis = list(title = "# Players"))
+  })
+
+  output$pos_pts_plot <- renderPlotly({
+    df <- filtered() %>%
+      group_by(Pos) %>%
+      summarise(avg_pts = mean(PTS, na.rm = TRUE), .groups = "drop") %>%
+      arrange(desc(avg_pts))
+    colors <- pos_colors[df$Pos]
+    p <- plot_ly(df, x = ~reorder(Pos, avg_pts), y = ~avg_pts, type = "bar",
+                 marker = list(color = colors,
+                               line = list(color = "rgba(0,0,0,0)", width = 0)),
+                 text = ~round(avg_pts, 2), textposition = "outside",
+                 textfont = list(family = "Barlow Condensed", size = 13, color = "#f0f4ff"),
+                 hovertemplate = "<b>%{x}</b><br>Avg PTS/G: %{y:.2f}<extra></extra>")
+    plotly_layout(p,
+                  xaxis = list(title = "", gridcolor = "rgba(0,0,0,0)",
+                               tickfont = list(family = "Barlow Condensed", size = 13, color = "#8fa3c0")),
+                  yaxis = list(title = "Avg PTS/G"))
+  })
+
+  output$top_scorers_plot <- renderPlotly({
+    df <- filtered() %>%
+      filter(!is.na(PTS), GP >= 5) %>%
+      arrange(desc(PTS)) %>%
+      slice_head(n = 10)
+    colors <- pos_colors[df$Pos]
+    p <- plot_ly(df,
+                 x = ~reorder(Player, PTS), y = ~PTS,
+                 type = "bar",
+                 marker = list(color = colors,
+                               line = list(color = "rgba(0,0,0,0)", width = 0)),
+                 text  = ~paste0(Player, "\n", Team, " · ", Pos),
+                 hovertemplate = "<b>%{text}</b><br>PTS/G: %{y:.2f}<extra></extra>")
+    plotly_layout(p,
+                  xaxis = list(title = "", tickangle = -30,
+                               tickfont = list(family = "Barlow", size = 11, color = "#8fa3c0")),
+                  yaxis = list(title = "PTS/G"))
+  })
+
+  # ── Player Table ─────────────────────────────────────────────────────────
+  output$player_table <- renderDT({
+    df <- filtered()
+    if (length(input$pos_filter) > 0) df <- df[df$Pos %in% input$pos_filter, ]
+    if (input$yr_filter != "All")     df <- df[df$Yr  == input$yr_filter, ]
+    df <- df[!is.na(df$GP) & df$GP >= input$min_gp, ]
+
+    pg_cols <- intersect(per_game_stats, names(df))
+    df[pg_cols] <- lapply(df[pg_cols], function(x) round(x, 3))
+
+    display_cols <- c("Season", "Player", "Team", "Conference", "Yr", "Pos",
+                      "Division", "GP", "S",
+                      "Kills", "Hit Pct", "Assists", "Aces",
+                      "Digs", "Block Solos", "Block Assists", "PTS")
+    display_cols <- intersect(display_cols, names(df))
+
+    pg_rename <- c(Kills = "Kills/G", Assists = "Assists/G", Aces = "Aces/G",
+                   Digs = "Digs/G", PTS = "PTS/G",
+                   "Block Solos" = "BlkSolo/G", "Block Assists" = "BlkAst/G")
+    colnames_display <- ifelse(display_cols %in% names(pg_rename),
+                               pg_rename[display_cols], display_cols)
+    out <- df[, display_cols]
+    names(out) <- colnames_display
+
+    datatable(out,
+              filter  = "top",
+              options = list(
+                pageLength = 15, scrollX = TRUE,
+                order = list(list(which(colnames_display == "PTS/G") - 1, "desc")),
+                dom = "Bfrtip",
+                initComplete = JS(
+                  "function(settings, json) {",
+                  "  $(this.api().table().header()).css({'background-color':'#1e2a3e','color':'#8fa3c0'});",
+                  "}"
+                )
+              ),
+              rownames = FALSE,
+              class = "compact") %>%
+      formatStyle("Pos",
+                  backgroundColor = styleEqual(
+                    c("OH",      "MB",      "S",       "OPP",     "DS",      "L"),
+                    c("#00d4b4","#f5c518","#9b5de5","#ff5f57","#60a5fa","#f97316")
+                  ),
+                  color = styleEqual(
+                    c("OH",      "MB",      "S",       "OPP",     "DS",      "L"),
+                    c("#0a0e1a","#0a0e1a","#f0f4ff","#f0f4ff","#0a0e1a","#0a0e1a")
+                  ),
+                  fontWeight = "bold",
+                  borderRadius = "4px",
+                  padding = "2px 8px") %>%
+      formatStyle("PTS/G",
+                  background = styleColorBar(range(out[["PTS/G"]], na.rm = TRUE), "#00d4b420"),
+                  backgroundSize = "100% 80%",
+                  backgroundRepeat = "no-repeat",
+                  backgroundPosition = "center")
+  })
+
+  # ── Position Comparison ──────────────────────────────────────────────────
+  output$comp_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$comp_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$comp_pos, ]
+    cname <- col_name(input$comp_stat)
+
+    summary_df <- df %>%
+      group_by(Pos) %>%
+      summarise(val = if (input$comp_type == "Mean")
+                        mean(get(cname),   na.rm = TRUE)
+                      else
+                        median(get(cname), na.rm = TRUE),
+                n = n(), .groups = "drop") %>%
+      arrange(desc(val))
+
+    colors <- pos_colors[summary_df$Pos]
+
+    p <- plot_ly(summary_df,
+                 x = ~reorder(Pos, val), y = ~val, type = "bar",
+                 marker = list(color = colors,
+                               line = list(color = "rgba(0,0,0,0)", width = 0)),
+                 text = ~paste0("n = ", n),
+                 textposition = "outside",
+                 textfont = list(family = "Barlow Condensed", size = 12, color = "#8fa3c0"),
+                 hovertemplate = "<b>%{x}</b><br>%{y:.3f}<extra></extra>")
+
+    plotly_layout(p,
+                  xaxis = list(title = ""),
+                  yaxis = list(title = paste(input$comp_type, input$comp_stat)),
+                  showlegend = FALSE,
+                  title = list(
+                    text = paste(input$comp_type, "·", input$comp_stat, "by Position"),
+                    font = list(family = "Barlow Condensed", size = 15, color = "#f0f4ff"),
+                    x = 0.01
+                  ))
+  })
+
+  output$violin_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$comp_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$comp_pos, ]
+    cname <- col_name(input$comp_stat)
+    df <- df[!is.na(df[[cname]]), ]
+
+  # Build one trace per position for custom colors
+    hex_to_rgba <- function(hex, alpha = 0.15) {
+      r <- strtoi(substr(hex, 2, 3), 16L)
+      g <- strtoi(substr(hex, 4, 5), 16L)
+      b <- strtoi(substr(hex, 6, 7), 16L)
+      sprintf("rgba(%d,%d,%d,%.2f)", r, g, b, alpha)
+    }
+    positions <- sort(unique(df$Pos))
+    p <- plot_ly(type = "violin")
+    for (pos in positions) {
+      sub <- df[df$Pos == pos, ]
+      p <- add_trace(p,
+        y = sub[[cname]],
+        x = rep(pos, nrow(sub)),
+        name = pos,
+        type = "violin",
+        box = list(visible = TRUE),
+        meanline = list(visible = TRUE, color = "#f5c518"),
+        points = "outliers",
+        line = list(color = pos_colors[pos]),
+        fillcolor = hex_to_rgba(pos_colors[pos], 0.15),
+        marker = list(color = pos_colors[pos], size = 4, opacity = 0.5),
+        hoverinfo = "y+name"
+      )
+    }
+
+    plotly_layout(p,
+                  xaxis = list(title = ""),
+                  yaxis = list(title = input$comp_stat),
+                  showlegend = FALSE,
+                  violingap = 0.05,
+                  violingroupgap = 0)
+  })
+
+  # ── Scatter Plot ─────────────────────────────────────────────────────────
+  output$scatter_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$sc_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$sc_pos, ]
+    df <- df[!is.na(df$GP) & df$GP >= input$sc_min_gp, ]
+
+    cx <- col_name(input$sc_x)
+    cy <- col_name(input$sc_y)
+    cz <- col_name(input$sc_col)
+    df <- df[!is.na(df[[cx]]) & !is.na(df[[cy]]) & !is.na(df[[cz]]), ]
+
+    pos_symbols <- c(
+      "OH"  = "circle",
+      "MB"  = "square",
+      "S"   = "triangle-up",
+      "OPP" = "diamond",
+      "DS"  = "cross",
+      "L"   = "star"
+    )
+
+    col_vals  <- df[[cz]]
+    col_range <- range(col_vals, na.rm = TRUE)
+
+    positions <- sort(unique(df$Pos))
+    p <- plot_ly(type = "scatter", mode = "markers")
+
+    for (i in seq_along(positions)) {
+      pos <- positions[i]
+      sub <- df[df$Pos == pos, ]
+      if (nrow(sub) == 0) next
+      p <- add_trace(p,
+        data        = sub,
+        x           = ~get(cx),
+        y           = ~get(cy),
+        name        = pos,
+        legendgroup = pos,
+        showlegend  = TRUE,
+        text        = ~paste0(
+          "<b>", Player, "</b>",
+          "<br>", Team, " · ", Pos, " · ", Yr,
+          "<br>", input$sc_x, ": <b>", round(get(cx), 3), "</b>",
+          "<br>", input$sc_y, ": <b>", round(get(cy), 3), "</b>",
+          "<br>", input$sc_col, ": <b>", round(get(cz), 3), "</b>"
+        ),
+        hoverinfo = "text",
+        marker = list(
+          symbol    = pos_symbols[[pos]],
+          color     = ~get(cz),
+          colorscale = list(
+            c(0, "#0a1628"), c(0.25, "#0d4f8c"), c(0.5, "#00d4b4"),
+            c(0.75, "#f5c518"), c(1, "#ff5f57")
+          ),
+          cmin      = col_range[1],
+          cmax      = col_range[2],
+          showscale = (i == 1),
+          colorbar  = list(
+            title = list(text = input$sc_col,
+                         font = list(family = "Barlow Condensed", size = 12, color = "#8fa3c0")),
+            tickfont = list(family = "Barlow", size = 10, color = "#8fa3c0"),
+            bgcolor = "rgba(22,29,46,0.8)",
+            bordercolor = "rgba(42,58,82,0.8)",
+            borderwidth = 1,
+            thickness = 14
+          ),
+          size      = 9,
+          opacity   = 0.85,
+          line      = list(width = 1, color = "rgba(255,255,255,0.2)")
+        )
+      )
+    }
+
+    plotly_layout(p,
+                  xaxis = list(title = input$sc_x),
+                  yaxis = list(title = input$sc_y),
+                  legend = list(
+                    title = list(
+                      text = "<b>Shape = Position</b>",
+                      font = list(family = "Barlow Condensed", size = 12, color = "#8fa3c0")
+                    )
+                  ))
+  })
+}
+
+# ── Run App ───────────────────────────────────────────────────────────────────
+shinyApp(ui, server)
