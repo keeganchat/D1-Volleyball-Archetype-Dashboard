@@ -1,0 +1,129 @@
+library(tidyverse)
+library(shiny)
+library(ncaavolleyballr)
+
+base_url <- "https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/"
+
+years <- 2020:2024
+
+set.seed(1)
+
+vball <- map_dfr(years, function(yr) {
+  url <- paste0(base_url, "wvb_playerseason_div1_", yr, ".csv")
+  read_csv(url, show_col_types = FALSE) |>
+    mutate(season = yr)
+})
+
+vb_clean <- vball %>%
+  mutate(
+    across(
+      c(Kills, `Total Attacks`, Assists, Aces, Digs, TB,
+        PTS, Errors, SErr, BErr, RErr, `Block Assists`, `Block Solos`),
+      ~ replace_na(., 0)
+    )
+  ) %>%
+  filter(S > 0) %>%
+  mutate(
+    kills_per_set   = Kills / S,
+    attacks_per_set = `Total Attacks` / S,
+    assists_per_set = Assists / S,
+    aces_per_set    = Aces / S,
+    digs_per_set    = Digs / S,
+    blocks_per_set  = TB / S,
+    points_per_set  = PTS / S,
+    errors_per_set      = Errors / S,
+    serve_err_per_set   = SErr / S,
+    block_err_per_set   = BErr / S,
+    receive_err_per_set = RErr / S,
+    bsolo_per_set = `Block Solos` / S,
+    bassists_per_set       = `Block Assists` / S,
+    attack_volume = `Total Attacks` / S,
+    block_impact  = TB / S
+  )
+
+team_season_2024 <- read_csv(
+  "https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/wvb_teamseason_div1_2024.csv"
+)
+
+team_match_2024 <- read_csv(
+  "https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/wvb_teammatch_div1_2024.csv"
+)
+
+team_win_pct_2024 <- team_match_2024 %>%
+  mutate(
+    win = if_else(str_sub(Result, 1, 1) == "W", 1, 0)
+  ) %>%
+  group_by(Season, Team, Conference) %>%
+  summarise(
+    matches = n(),
+    wins = sum(win, na.rm = TRUE),
+    win_pct = mean(win, na.rm = TRUE),
+    .groups = "drop"
+  )  
+
+model_df <- team_season_2024 %>%
+  left_join(
+    team_win_pct_2024,
+    by = c("Season", "Team", "Conference")
+  ) %>%
+  filter(S > 0) %>%
+  mutate(
+    kills_ps   = Kills / S,
+    errors_ps  = Errors / S,
+    attacks_ps = `Total Attacks` / S,
+    assists_ps = Assists / S,
+    aces_ps    = Aces / S,
+    serr_ps    = SErr / S,
+    digs_ps    = Digs / S,
+    rerr_ps    = RErr / S,
+    bsolo_ps   = `Block Solos` / S,
+    bassist_ps = `Block Assists` / S,
+    berr_ps    = BErr / S,
+    pts_ps     = PTS / S,
+    bhe_ps     = BHE / S
+  )  
+
+model_df1 <- model_df %>%
+  mutate(
+    across(
+      c(kills_ps, errors_ps, attacks_ps, assists_ps, aces_ps, serr_ps, bhe_ps,
+        digs_ps, rerr_ps, bsolo_ps, bassist_ps, berr_ps),
+      ~ as.numeric(scale(.)),
+      .names = "{.col}_z"
+    )
+  )  
+
+off_model <- lm(
+  win_pct ~ kills_ps_z + errors_ps_z + aces_ps_z,
+  data = model_df1
+)
+
+def_model <- lm(
+  win_pct ~ digs_ps_z + rerr_ps_z + bsolo_ps_z + bassist_ps_z + berr_ps_z,
+  data = model_df1
+)
+
+summary(off_model)
+summary(def_model)
+
+vb_new <- vb_clean %>%
+  mutate(
+    wOV =
+      0.133197 * kills_per_set +
+      -0.063021 * errors_per_set +
+      0.031552 * aces_per_set,
+    wDV =
+      -0.009673 * digs_per_set +
+      -0.123784 * receive_err_per_set +
+      0.027278 * bsolo_per_set +
+      0.052643 * bassists_per_set +
+      -0.011022 * block_err_per_set
+  )
+
+mean_wOV <- mean(vb_new$wOV, na.rm = TRUE)
+mean_wDV <- mean(vb_new$wDV, na.rm = TRUE)
+
+ggplot(vb_new, aes(x = wOV, y = wDV, color = Pos)) + 
+  geom_point() +
+  geom_vline(xintercept = mean_wOV, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = mean_wDV, linetype = "dashed", color = "red")  
