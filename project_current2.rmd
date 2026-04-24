@@ -1,0 +1,477 @@
+---
+title: "project2"
+author: "Avery Cutright"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+FINAL CODE:
+```{r}
+# ── NCAA Women's Volleyball Dashboard ────────────────────────────────────────
+library(shiny)
+library(shinydashboard)
+library(dplyr)
+library(plotly)
+library(DT)
+
+BASE_URL <- "https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/"
+divs  <- c(1, 2, 3)
+years <- 2020:2024
+build_url <- function(div, year) paste0(BASE_URL, "wvb_playerseason_div", div, "_", year, ".csv")
+
+per_game_stats <- c("Kills","Errors","Total Attacks","Assists","Aces","SErr","Digs","RErr", "RetAtt", "Block Solos","Block Assists","BErr","PTS","SrvAtt")
+
+load_data <- function() {
+  combos <- expand.grid(div = divs, year = years, stringsAsFactors = FALSE)
+  dfs <- lapply(seq_len(nrow(combos)), function(i) {
+    tryCatch({ df <- read.csv(build_url(combos$div[i], combos$year[i]), stringsAsFactors = FALSE, check.names = FALSE); df$Division <- paste0("Div ", combos$div[i]); df }, error = function(e) NULL)
+  })
+  raw <- bind_rows(Filter(Negate(is.null), dfs))
+  raw$Pos[raw$Pos == "MH"] <- "MB"; raw$Pos[raw$Pos == "RS"] <- "OPP"; raw$Pos[raw$Pos == "LS"] <- "L"
+  raw$GP <- as.numeric(raw$GP)
+  for (col in per_game_stats) if (col %in% names(raw)) { raw[[col]] <- as.numeric(raw[[col]]); raw[[col]] <- ifelse(is.na(raw$GP)|raw$GP==0, NA, raw[[col]]/raw$GP) }
+  raw$`Hit Pct` <- as.numeric(raw$`Hit Pct`)
+  raw
+}
+
+pos_labels <- c("OH"="Outside Hitter (OH)","MB"="Middle Blocker/Hitter (MB)","S"="Setter (S)","OPP"="Opposite/Right Side (OPP)","DS"="Defensive Specialist / Libero (DS/L)","L"="Libero (L)")
+stat_choices <- c("Kills/G","Errors/G","Total Attacks/G","Hit Pct","Assists/G","Aces/G","Digs/G","Return Attempts/G","Block Solos/G","Block Assists/G","PTS/G")
+stat_col_map <- c("Kills/G"="Kills","Errors/G"="Errors","Total Attacks/G"="Total Attacks","Hit Pct"="Hit Pct","Assists/G"="Assists","Aces/G"="Aces","Digs/G"="Digs","Return Attempts/G"="RetAtt","Block Solos/G"="Block Solos","Block Assists/G"="Block Assists","PTS/G"="PTS")
+pos_colors <- c("OH"="#00d4b4","MB"="#f5c518","S"="#9b5de5","OPP"="#ff5f57","DS"="#60a5fa","L"="#f97316")
+
+custom_css <- "
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500;600&display=swap');
+:root{--navy:#0a0e1a;--navy-mid:#111827;--navy-card:#161d2e;--navy-lite:#1e2a3e;--border:#2a3a52;--gold:#f5c518;--teal:#00d4b4;--coral:#ff5f57;--purple:#9b5de5;--text-hi:#f0f4ff;--text-mid:#8fa3c0;--text-lo:#4a5f7a;--grad-h:linear-gradient(135deg,#0d1b35 0%,#0a2040 50%,#061226 100%);}
+*{box-sizing:border-box;}
+body,.wrapper{background:var(--navy)!important;font-family:'Barlow',sans-serif!important;color:var(--text-hi)!important;}
+.main-header .navbar,.main-header .logo{background:linear-gradient(90deg,#0a0e1a 0%,#0d1525 100%)!important;border-bottom:2px solid var(--gold)!important;box-shadow:0 4px 24px rgba(245,197,24,0.12)!important;}
+.main-header .logo{font-family:'Barlow Condensed',sans-serif!important;font-weight:800!important;font-size:18px!important;letter-spacing:1.5px!important;text-transform:uppercase!important;color:var(--gold)!important;border-right:1px solid var(--border)!important;}
+.main-header .navbar .sidebar-toggle{color:var(--text-mid)!important;}
+.main-header .navbar .sidebar-toggle:hover{background:rgba(245,197,24,0.1)!important;color:var(--gold)!important;}
+.main-sidebar{background:var(--navy-mid)!important;border-right:1px solid var(--border)!important;}
+.sidebar-menu>li>a{font-family:'Barlow Condensed',sans-serif!important;font-size:14px!important;font-weight:600!important;letter-spacing:0.8px!important;text-transform:uppercase!important;color:var(--text-mid)!important;border-left:3px solid transparent!important;padding:12px 16px!important;transition:all 0.2s ease!important;}
+.sidebar-menu>li>a:hover,.sidebar-menu>li.active>a{background:rgba(245,197,24,0.06)!important;color:var(--gold)!important;border-left-color:var(--gold)!important;}
+.sidebar-menu>li>a i{color:inherit!important;margin-right:10px!important;}
+.sidebar .shiny-input-container label,.sidebar .control-label{font-family:'Barlow Condensed',sans-serif!important;font-size:11px!important;font-weight:600!important;letter-spacing:1.5px!important;text-transform:uppercase!important;color:var(--text-lo)!important;display:block!important;margin-bottom:6px!important;}
+.sidebar .checkbox label,.sidebar .radio label{color:var(--text-mid)!important;font-size:13px!important;font-family:'Barlow',sans-serif!important;}
+.sidebar select,.sidebar .form-control{background:var(--navy-card)!important;border:1px solid var(--border)!important;color:var(--text-hi)!important;border-radius:6px!important;font-family:'Barlow',sans-serif!important;font-size:13px!important;padding:6px 10px!important;width:100%!important;}
+.sidebar hr{border-color:var(--border)!important;margin:12px 10px!important;}
+.sidebar .text-muted{color:var(--text-lo)!important;font-size:11px!important;line-height:1.5!important;display:block!important;}
+.content-wrapper{background:var(--grad-h)!important;background-attachment:fixed!important;min-height:100vh!important;}
+.content{padding:20px!important;}
+.box{background:var(--navy-card)!important;border:1px solid var(--border)!important;border-top:none!important;border-radius:10px!important;box-shadow:0 4px 24px rgba(0,0,0,0.4)!important;overflow:hidden!important;}
+.box-header{background:transparent!important;border-bottom:1px solid var(--border)!important;padding:14px 18px!important;}
+.box-header .box-title{font-family:'Barlow Condensed',sans-serif!important;font-size:14px!important;font-weight:700!important;letter-spacing:1.5px!important;text-transform:uppercase!important;color:var(--text-hi)!important;}
+.box.box-solid.box-primary>.box-header{background:linear-gradient(90deg,rgba(0,212,180,0.15),transparent)!important;border-left:3px solid var(--teal)!important;}
+.box.box-solid.box-info>.box-header{background:linear-gradient(90deg,rgba(155,93,229,0.15),transparent)!important;border-left:3px solid var(--purple)!important;}
+.box.box-solid.box-warning>.box-header{background:linear-gradient(90deg,rgba(245,197,24,0.15),transparent)!important;border-left:3px solid var(--gold)!important;}
+.box-body{padding:16px!important;}
+.shiny-input-container label,.control-label{font-family:'Barlow Condensed',sans-serif!important;font-size:11px!important;font-weight:600!important;letter-spacing:1.5px!important;text-transform:uppercase!important;color:var(--text-lo)!important;margin-bottom:5px!important;}
+.form-control,select.form-control{background:var(--navy-lite)!important;border:1px solid var(--border)!important;color:var(--text-hi)!important;border-radius:6px!important;font-family:'Barlow',sans-serif!important;font-size:13px!important;}
+.radio label,.checkbox label{color:var(--text-mid)!important;font-family:'Barlow',sans-serif!important;font-size:13px!important;}
+.shiny-notification{background:var(--navy-card)!important;border:1px solid var(--border)!important;border-left:3px solid var(--teal)!important;border-radius:8px!important;color:var(--text-hi)!important;font-family:'Barlow Condensed',sans-serif!important;}
+::-webkit-scrollbar{width:6px;height:6px;}
+::-webkit-scrollbar-track{background:var(--navy-mid);}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+::-webkit-scrollbar-thumb:hover{background:var(--text-lo);}
+.progress-bar{background-color:var(--teal)!important;}
+.progress{background-color:var(--navy-lite)!important;border-radius:4px!important;}
+.row{margin-bottom:0!important;}
+.col-sm-12,.col-md-6,.col-md-4,.col-md-8,.col-md-3,.col-md-9{padding:8px!important;}
+.content-header{display:none!important;}
+"
+
+ui <- dashboardPage(
+  skin = "black",
+  dashboardHeader(title = tags$span(
+    tags$span(style="color:#f5c518;font-family:'Barlow Condensed',sans-serif;font-weight:800;letter-spacing:1px;","NCAA"),
+    tags$span(style="color:#f0f4ff;font-family:'Barlow Condensed',sans-serif;font-weight:600;letter-spacing:1px;margin-left:6px;","Women's Volleyball")
+  )),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Position Comp", tabName="poscomp", icon=icon("chart-bar")),
+      menuItem("Scatter Plot",  tabName="scatter",  icon=icon("circle-dot")),
+      menuItem("Radar Chart",   tabName="radar",    icon=icon("spider"))
+    ),
+    tags$hr(),
+    tags$div(style="padding:0 10px;",
+      checkboxGroupInput("div_filter","Division",choices=c("Div 1","Div 2","Div 3"),selected="Div 1"),
+      selectInput("season_filter","Season",choices=rev(paste0(2020:2024,"-",2021:2025)),selected="2024-2025")
+    ),
+    tags$hr(),
+    tags$div(class="text-muted",style="padding:4px 14px 12px;",tags$em("All stats shown per game (per GP)."),tags$br(),tags$br(),"Data: JeffreyRStevens/ncaavolleyballr")
+  ),
+  dashboardBody(
+    tags$head(tags$style(HTML(custom_css)),tags$link(rel="stylesheet",href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500;600&display=swap")),
+    tabItems(
+
+      tabItem("poscomp",
+        fluidRow(
+          box(title="Players by Position", status="primary", solidHeader=TRUE, width=12,
+              plotlyOutput("pos_count_plot", height=300))
+        ),
+        fluidRow(
+          box(width=4, status="primary",
+              radioButtons("comp_scale","View metrics as",
+                           choices=c("Per game"="per_game","Season total"="total"),
+                           selected="per_game", inline=TRUE),
+              tags$hr(),
+              selectInput("comp_stat","Statistic to Compare",choices=stat_choices,selected="Kills/G"),
+              radioButtons("comp_type","Summary Type",choices=c("Mean","Median"),selected="Mean",inline=TRUE),
+              checkboxGroupInput("comp_pos","Positions to Include",choices=names(pos_labels),selected=names(pos_labels))
+          ),
+          box(width=8, title="Position Comparison", status="info", solidHeader=TRUE,
+              plotlyOutput("comp_plot", height=400))
+        ),
+        fluidRow(
+          box(width=12, title="Distribution by Position — Violin", status="warning", solidHeader=TRUE,
+              plotlyOutput("violin_plot", height=360))
+        )
+      ),
+
+      tabItem("scatter",
+        fluidRow(
+          box(width=3, status="primary",
+              selectInput("sc_x","X Axis",choices=stat_choices,selected="Kills/G"),
+              selectInput("sc_y","Y Axis",choices=stat_choices,selected="Digs/G"),
+              selectInput("sc_col","Color By (metric)",choices=stat_choices,selected="PTS/G"),
+              tags$p(class="text-muted",style="font-size:11px;margin-top:6px;",tags$em("Shape = Position")),
+              tags$hr(),
+              checkboxGroupInput("sc_pos","Positions",choices=names(pos_labels),selected=names(pos_labels)),
+              numericInput("sc_min_gp","Min Games Played",value=10,min=0)
+          ),
+          box(width=9, title="Player Scatter — per-game stats", status="info", solidHeader=TRUE,
+              plotlyOutput("scatter_plot", height=500))
+        )
+      ),
+
+      tabItem("radar",
+        fluidRow(
+          box(width=3, status="primary",
+              checkboxGroupInput("radar_stats","Stats to Include",
+                                 choices=stat_choices,
+                                 selected=c("Kills/G","Assists/G","Digs/G","Block Solos/G","Aces/G","Hit Pct")),
+              tags$hr(),
+              checkboxGroupInput("radar_pos","Positions to Show",
+                                 choices=names(pos_labels),
+                                 selected=names(pos_labels)),
+              tags$hr(),
+              radioButtons("radar_summary","Summarise by",
+                           choices=c("Mean","Median"),selected="Mean",inline=TRUE),
+              tags$hr(),
+              tags$p(class="text-muted",style="font-size:11px;",
+                     tags$em("Values are min-max scaled (0\u20131) so all axes are comparable."))
+          ),
+          box(width=9, title="Position Radar Chart", status="info", solidHeader=TRUE,
+              plotlyOutput("radar_plot", height=560))
+        ),
+        fluidRow(
+          box(width=12, title="Plot a Custom Player Profile",
+              status="warning", solidHeader=TRUE, collapsible=TRUE, collapsed=TRUE,
+              tags$p(style="color:#8fa3c0;font-size:12px;margin-bottom:14px;",
+                     "Enter per-game values for each active stat. Your profile will be scaled against the ",
+                     "position averages and shown as a ",
+                     tags$b(style="color:#f5c518;","gold dashed line"), " on the radar."),
+              fluidRow(
+                column(9, uiOutput("custom_inputs")),
+                column(3,
+                  tags$br(),
+                  textInput("custom_label","Profile label",value="My Player",placeholder="e.g. Jane Smith"),
+                  tags$br(),
+                  actionButton("custom_reset","Reset values",
+                               style="background:#1e2a3e;color:#8fa3c0;border:1px solid #2a3a52;border-radius:6px;font-family:\'Barlow Condensed\',sans-serif;font-size:12px;letter-spacing:1px;width:100%;")
+                )
+              )
+          )
+        )
+      )
+    )
+  )
+)
+
+plotly_layout <- function(p, ...) {
+  p %>% layout(
+    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+    font=list(family="Barlow, sans-serif",color="#8fa3c0",size=12),
+    xaxis=list(gridcolor="rgba(42,58,82,0.6)",zerolinecolor="rgba(42,58,82,0.8)",tickfont=list(family="Barlow, sans-serif",size=11,color="#8fa3c0"),titlefont=list(family="Barlow Condensed, sans-serif",size=13,color="#8fa3c0")),
+    yaxis=list(gridcolor="rgba(42,58,82,0.6)",zerolinecolor="rgba(42,58,82,0.8)",tickfont=list(family="Barlow, sans-serif",size=11,color="#8fa3c0"),titlefont=list(family="Barlow Condensed, sans-serif",size=13,color="#8fa3c0")),
+    legend=list(bgcolor="rgba(22,29,46,0.8)",bordercolor="rgba(42,58,82,0.8)",borderwidth=1,font=list(family="Barlow Condensed, sans-serif",size=12,color="#8fa3c0")),
+    hoverlabel=list(bgcolor="#0a0e1a",bordercolor="#2a3a52",font=list(family="Barlow, sans-serif",size=12,color="#f0f4ff")),
+    margin=list(t=20,b=50,l=50,r=20),
+    ...
+  )
+}
+
+server <- function(input, output, session) {
+
+  raw_data <- reactive({
+    withProgress(message="Loading NCAA Women's Volleyball data\u2026", value=0.1, { df <- load_data(); incProgress(0.8); df })
+  })
+
+  filtered <- reactive({
+    df <- raw_data(); req(nrow(df) > 0)
+    if (length(input$div_filter) > 0) df <- df[df$Division %in% input$div_filter, ]
+    if (!is.null(input$season_filter) && input$season_filter != "All") df <- df[df$Season == input$season_filter, ]
+    df[df$Pos %in% names(pos_labels), ]
+  })
+
+  col_name <- function(label) unname(stat_col_map[label])
+
+  # Players by position count chart
+  output$pos_count_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$comp_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$comp_pos, ]
+    count_df <- df %>% count(Pos) %>% arrange(desc(n)) %>% mutate(color = pos_colors[Pos])
+    p <- plot_ly(count_df, x=~reorder(Pos,-n), y=~n, type="bar",
+                 marker=list(color=~color, line=list(color="rgba(0,0,0,0)",width=0)),
+                 text=~n, textposition="outside",
+                 textfont=list(family="Barlow Condensed",size=13,color="#f0f4ff"),
+                 hovertemplate=~paste0("<b>",Pos,"</b><br>Players: ",n,"<extra></extra>"))
+    plotly_layout(p, xaxis=list(title="",gridcolor="rgba(0,0,0,0)",tickfont=list(family="Barlow Condensed",size=14,color="#8fa3c0")), yaxis=list(title="Number of Players"), showlegend=FALSE)
+  })
+
+  # Position comparison bar chart
+  output$comp_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$comp_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$comp_pos, ]
+    cname <- col_name(input$comp_stat)
+    is_rate <- cname == "Hit Pct"
+    if (input$comp_scale == "total" && !is_rate) {
+      df$plot_val <- df[[cname]] * df$GP
+    } else {
+      df$plot_val <- df[[cname]]
+    }
+    y_label <- if (input$comp_scale == "total" && !is_rate)
+      sub("/G$", " (season total)", input$comp_stat) else input$comp_stat
+    summary_df <- df %>% group_by(Pos) %>%
+      summarise(val=if(input$comp_type=="Mean") mean(plot_val,na.rm=TRUE) else median(plot_val,na.rm=TRUE), n=n(), .groups="drop") %>%
+      arrange(desc(val))
+    p <- plot_ly(summary_df, x=~reorder(Pos,val), y=~val, type="bar",
+                 marker=list(color=pos_colors[summary_df$Pos], line=list(color="rgba(0,0,0,0)",width=0)),
+                 text=~paste0("n = ",n), textposition="outside",
+                 textfont=list(family="Barlow Condensed",size=12,color="#8fa3c0"),
+                 hovertemplate="<b>%{x}</b><br>%{y:.3f}<extra></extra>")
+    plotly_layout(p, xaxis=list(title=""), yaxis=list(title=paste(input$comp_type, y_label)), showlegend=FALSE,
+                  title=list(text=paste(input$comp_type,"\u00b7",y_label,"by Position"),font=list(family="Barlow Condensed",size=15,color="#f0f4ff"),x=0.01))
+  })
+
+  # Violin plot
+  output$violin_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$comp_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$comp_pos, ]
+    cname <- col_name(input$comp_stat)
+    is_rate <- cname == "Hit Pct"
+    if (input$comp_scale == "total" && !is_rate) {
+      df$plot_val <- df[[cname]] * df$GP
+    } else {
+      df$plot_val <- df[[cname]]
+    }
+    y_label <- if (input$comp_scale == "total" && !is_rate)
+      sub("/G$", " (season total)", input$comp_stat) else input$comp_stat
+    df <- df[!is.na(df$plot_val), ]
+    hex_to_rgba <- function(hex, alpha=0.15) {
+      sprintf("rgba(%d,%d,%d,%.2f)", strtoi(substr(hex,2,3),16L), strtoi(substr(hex,4,5),16L), strtoi(substr(hex,6,7),16L), alpha)
+    }
+    positions <- sort(unique(df$Pos))
+    p <- plot_ly(type="violin")
+    for (pos in positions) {
+      sub <- df[df$Pos==pos,]
+      p <- add_trace(p, y=sub$plot_val, x=rep(pos,nrow(sub)), name=pos, type="violin",
+                     box=list(visible=TRUE), meanline=list(visible=TRUE,color="#f5c518"),
+                     points="outliers", line=list(color=pos_colors[pos]),
+                     fillcolor=hex_to_rgba(pos_colors[pos],0.15),
+                     marker=list(color=pos_colors[pos],size=4,opacity=0.5), hoverinfo="y+name")
+    }
+    plotly_layout(p, xaxis=list(title=""), yaxis=list(title=y_label), showlegend=FALSE, violingap=0.05, violingroupgap=0)
+  })
+
+  # Scatter plot
+  output$scatter_plot <- renderPlotly({
+    df <- filtered()
+    if (length(input$sc_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$sc_pos, ]
+    df <- df[!is.na(df$GP) & df$GP >= input$sc_min_gp, ]
+    cx <- col_name(input$sc_x); cy <- col_name(input$sc_y); cz <- col_name(input$sc_col)
+    df <- df[!is.na(df[[cx]]) & !is.na(df[[cy]]) & !is.na(df[[cz]]), ]
+    pos_symbols <- c("OH"="circle","MB"="square","S"="triangle-up","OPP"="diamond","DS"="cross","L"="star")
+    col_range <- range(df[[cz]], na.rm=TRUE)
+    positions <- sort(unique(df$Pos))
+    p <- plot_ly(type="scatter", mode="markers")
+    for (i in seq_along(positions)) {
+      pos <- positions[i]; sub <- df[df$Pos==pos,]
+      if (nrow(sub)==0) next
+      p <- add_trace(p, data=sub, x=~get(cx), y=~get(cy), name=pos, legendgroup=pos, showlegend=TRUE,
+                     text=~paste0("<b>",Player,"</b>","<br>",Team," \u00b7 ",Pos," \u00b7 ",Yr,
+                                  "<br>",input$sc_x,": <b>",round(get(cx),3),"</b>",
+                                  "<br>",input$sc_y,": <b>",round(get(cy),3),"</b>",
+                                  "<br>",input$sc_col,": <b>",round(get(cz),3),"</b>"),
+                     hoverinfo="text",
+                     marker=list(symbol=pos_symbols[[pos]], color=~get(cz),
+                                 colorscale=list(c(0,"#0a1628"),c(0.25,"#0d4f8c"),c(0.5,"#00d4b4"),c(0.75,"#f5c518"),c(1,"#ff5f57")),
+                                 cmin=col_range[1], cmax=col_range[2], showscale=(i==1),
+                                 colorbar=list(title=list(text=input$sc_col,font=list(family="Barlow Condensed",size=12,color="#8fa3c0")),
+                                               tickfont=list(family="Barlow",size=10,color="#8fa3c0"),
+                                               bgcolor="rgba(22,29,46,0.8)",bordercolor="rgba(42,58,82,0.8)",borderwidth=1,thickness=14),
+                                 size=9, opacity=0.85, line=list(width=1,color="rgba(255,255,255,0.2)")))
+    }
+    plotly_layout(p, xaxis=list(title=input$sc_x), yaxis=list(title=input$sc_y),
+                  legend=list(title=list(text="<b>Shape = Position</b>",font=list(family="Barlow Condensed",size=12,color="#8fa3c0"))))
+  })
+
+  # ── Radar chart ─────────────────────────────────────────────
+
+  # Render one numericInput per selected stat with data range as hint
+  output$custom_inputs <- renderUI({
+    req(length(input$radar_stats) >= 1)
+    df   <- filtered()
+    cols <- stat_col_map[input$radar_stats]
+    inputs <- lapply(seq_along(input$radar_stats), function(i) {
+      lbl <- input$radar_stats[i]
+      col <- unname(cols[i])
+      id  <- paste0("custom_", gsub("[^A-Za-z0-9]", "_", lbl))
+      rng <- range(df[[col]], na.rm=TRUE)
+      hint <- sprintf("range: %.2f – %.2f", rng[1], rng[2])
+      column(3,
+        numericInput(id, label=tags$span(lbl, tags$small(style="color:#4a5f7a;display:block;", hint)),
+                     value=NA, min=0, step=0.01, width="100%")
+      )
+    })
+    do.call(fluidRow, inputs)
+  })
+
+  # Reset all custom inputs to NA when button clicked
+  observeEvent(input$custom_reset, {
+    req(length(input$radar_stats) >= 1)
+    for (lbl in input$radar_stats) {
+      id <- paste0("custom_", gsub("[^A-Za-z0-9]", "_", lbl))
+      updateNumericInput(session, id, value=NA)
+    }
+  })
+
+  output$radar_plot <- renderPlotly({
+    df <- filtered()
+    req(length(input$radar_stats) >= 3, length(input$radar_pos) >= 1)
+    stat_cols  <- stat_col_map[input$radar_stats]
+    summary_fn <- if (input$radar_summary == "Mean") mean else median
+    radar_df <- df %>%
+      filter(Pos %in% names(pos_labels)) %>%
+      group_by(Pos) %>%
+      summarise(across(all_of(unname(stat_cols)),
+                       ~summary_fn(.x, na.rm = TRUE)),
+                .groups = "drop")
+    for (col in unname(stat_cols)) {
+      rng <- range(radar_df[[col]], na.rm = TRUE)
+      radar_df[[col]] <- if (diff(rng) == 0) 0.5 else
+        (radar_df[[col]] - rng[1]) / diff(rng)
+    }
+    # Filter to only the positions the user has selected
+    radar_df <- radar_df[radar_df$Pos %in% input$radar_pos, ]
+    req(nrow(radar_df) >= 1)
+    theta_labels <- input$radar_stats
+    # Use dashboard palette to stay consistent with other charts
+    radar_colors <- c(
+      "OH"="#00d4b4", "MB"="#f5c518", "S"="#9b5de5",
+      "OPP"="#ff5f57", "DS"="#60a5fa", "L"="#f97316"
+    )
+    p <- plot_ly(type="scatterpolar", mode="lines+markers", fill="toself")
+    for (pos in radar_df$Pos) {
+      row    <- radar_df[radar_df$Pos == pos, unname(stat_cols), drop = FALSE]
+      values <- c(as.numeric(row), as.numeric(row)[1])
+      theta  <- c(theta_labels, theta_labels[1])
+      clr    <- radar_colors[[pos]]
+      rgb    <- strtoi(c(substr(clr,2,3), substr(clr,4,5), substr(clr,6,7)), 16L)
+      p <- add_trace(p,
+        r         = values,
+        theta     = theta,
+        name      = pos,
+        line      = list(color = clr, width = 2),
+        marker    = list(color = clr, size = 6),
+        fillcolor = paste0("rgba(", paste(rgb, collapse=","), ",0.12)")
+      )
+    }
+    # ---- Custom player trace ------------------------------------------------
+    # Collect values from dynamic inputs
+    custom_vals <- sapply(input$radar_stats, function(lbl) {
+      id  <- paste0("custom_", gsub("[^A-Za-z0-9]", "_", lbl))
+      val <- input[[id]]
+      if (is.null(val) || is.na(val)) NA_real_ else as.numeric(val)
+    })
+
+    if (!all(is.na(custom_vals))) {
+      # Scale the custom values using the SAME raw ranges as the position averages
+      # so the custom point sits correctly relative to the position polygons
+      df_raw <- filtered()
+      stat_cols_raw <- stat_col_map[input$radar_stats]
+      raw_df <- df_raw %>%
+        filter(Pos %in% names(pos_labels)) %>%
+        group_by(Pos) %>%
+        summarise(across(all_of(unname(stat_cols_raw)), ~summary_fn(.x, na.rm=TRUE)), .groups="drop")
+
+      scaled_custom <- mapply(function(val, col) {
+        rng <- range(raw_df[[col]], na.rm=TRUE)
+        if (is.na(val)) NA_real_
+        else if (diff(rng) == 0) 0.5
+        else max(0, min(1, (val - rng[1]) / diff(rng)))  # clamp to [0,1]
+      }, custom_vals, unname(stat_cols_raw))
+
+      # Only plot if at least one value was entered; use 0 for missing stats
+      plot_vals   <- ifelse(is.na(scaled_custom), 0, scaled_custom)
+      label       <- if (nchar(trimws(input$custom_label)) > 0) trimws(input$custom_label) else "Custom"
+      closed_vals <- c(plot_vals, plot_vals[1])
+      closed_theta <- c(theta_labels, theta_labels[1])
+
+      p <- add_trace(p,
+        r         = closed_vals,
+        theta     = closed_theta,
+        name      = label,
+        mode      = "lines+markers",
+        fill      = "toself",
+        line      = list(color="#f5c518", width=2.5, dash="dash"),
+        marker    = list(color="#f5c518", size=8,
+                         line=list(color="#0a0e1a", width=1.5)),
+        fillcolor = "rgba(245,197,24,0.08)"
+      )
+    }
+    # -------------------------------------------------------------------------
+
+    p %>% layout(
+      polar = list(
+        bgcolor = "rgba(0,0,0,0)",
+        radialaxis = list(
+          visible   = TRUE,
+          range     = c(0, 1),
+          tickvals  = c(0, 0.25, 0.5, 0.75, 1),
+          ticktext  = c("0", "0.25", "0.5", "0.75", "1"),
+          gridcolor = "rgba(42,58,82,0.6)",
+          linecolor = "rgba(42,58,82,0.8)",
+          tickfont  = list(family="Barlow, sans-serif", size=10, color="#8fa3c0")
+        ),
+        angularaxis = list(
+          gridcolor = "rgba(42,58,82,0.6)",
+          linecolor = "rgba(42,58,82,0.8)",
+          tickfont  = list(family="Barlow Condensed, sans-serif", size=12, color="#8fa3c0")
+        )
+      ),
+      legend = list(
+        title       = list(text="<b>Position</b>",
+                           font=list(family="Barlow Condensed",size=12,color="#8fa3c0")),
+        bgcolor     = "rgba(22,29,46,0.8)",
+        bordercolor = "rgba(42,58,82,0.8)",
+        borderwidth = 1,
+        font        = list(family="Barlow Condensed",size=12,color="#8fa3c0")
+      ),
+      plot_bgcolor  = "rgba(0,0,0,0)",
+      paper_bgcolor = "rgba(0,0,0,0)",
+      font          = list(family="Barlow, sans-serif", color="#8fa3c0"),
+      hoverlabel    = list(bgcolor="#0a0e1a", bordercolor="#2a3a52",
+                           font=list(family="Barlow, sans-serif",size=12,color="#f0f4ff")),
+      margin        = list(t=20, b=20, l=20, r=20)
+    )
+  })
+}
+
+shinyApp(ui, server)
+```
