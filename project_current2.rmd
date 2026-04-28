@@ -11,15 +11,16 @@ FINAL CODE:
 library(shiny)
 library(shinydashboard)
 library(dplyr)
+library(tidyr)
 library(plotly)
 library(DT)
 
 BASE_URL <- "https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/"
-divs  <- c(1, 2, 3)
+divs  <- c(1)
 years <- 2020:2024
 build_url <- function(div, year) paste0(BASE_URL, "wvb_playerseason_div", div, "_", year, ".csv")
 
-per_game_stats <- c("Kills","Errors","Total Attacks","Assists","Aces","SErr","Digs","RErr", "RetAtt", "Block Solos","Block Assists","BErr","PTS","SrvAtt")
+per_game_stats <- c("Kills","Errors","Total Attacks","Assists","Aces","SErr","Digs","RErr","RetAtt", "Block Solos","Block Assists","BErr","PTS","SrvAtt")
 
 load_data <- function() {
   combos <- expand.grid(div = divs, year = years, stringsAsFactors = FALSE)
@@ -31,6 +32,28 @@ load_data <- function() {
   raw$GP <- as.numeric(raw$GP)
   for (col in per_game_stats) if (col %in% names(raw)) { raw[[col]] <- as.numeric(raw[[col]]); raw[[col]] <- ifelse(is.na(raw$GP)|raw$GP==0, NA, raw[[col]]/raw$GP) }
   raw$`Hit Pct` <- as.numeric(raw$`Hit Pct`)
+
+  # ── wOV / wDV (per-set weighted values from linear model coefficients) ──────
+  # Replace NA with 0 for the counting stats used in the composite metrics
+  count_cols <- c("Kills","Errors","Aces","Digs","RErr","Block Solos","Block Assists","BErr")
+  for (col in count_cols) {
+    if (col %in% names(raw)) raw[[col]][is.na(raw[[col]])] <- 0
+  }
+  raw$S_num <- as.numeric(raw$S)
+  raw$wOV <- ifelse(
+    is.na(raw$S_num) | raw$S_num == 0, NA,
+     0.133197 * (raw$Kills         / raw$S_num) +
+    -0.063021 * (raw$Errors        / raw$S_num) +
+     0.031552 * (raw$Aces          / raw$S_num)
+  )
+  raw$wDV <- ifelse(
+    is.na(raw$S_num) | raw$S_num == 0, NA,
+    -0.009673 * (raw$Digs          / raw$S_num) +
+    -0.123784 * (raw$RErr          / raw$S_num) +
+     0.027278 * (raw$`Block Solos` / raw$S_num) +
+     0.052643 * (raw$`Block Assists`/ raw$S_num) +
+    -0.011022 * (raw$BErr          / raw$S_num)
+  )
   raw
 }
 
@@ -38,6 +61,62 @@ pos_labels <- c("OH"="Outside Hitter (OH)","MB"="Middle Blocker/Hitter (MB)","S"
 stat_choices <- c("Kills/G","Errors/G","Total Attacks/G","Hit Pct","Assists/G","Aces/G","Digs/G","Return Attempts/G","Block Solos/G","Block Assists/G","PTS/G")
 stat_col_map <- c("Kills/G"="Kills","Errors/G"="Errors","Total Attacks/G"="Total Attacks","Hit Pct"="Hit Pct","Assists/G"="Assists","Aces/G"="Aces","Digs/G"="Digs","Return Attempts/G"="RetAtt","Block Solos/G"="Block Solos","Block Assists/G"="Block Assists","PTS/G"="PTS")
 pos_colors <- c("OH"="#00d4b4","MB"="#f5c518","S"="#9b5de5","OPP"="#ff5f57","DS"="#60a5fa","L"="#f97316")
+
+# ── Player archetype definitions ──────────────────────────────────────────────
+archetypes <- list(
+  front = list(
+    HH = list(
+      icon  = "\U0001F3C6",
+      name  = "Complete Weapon",
+      short = "High Off / High Def",
+      desc  = "Kills efficiently and shuts down opponents at the net. The two-way elite attacker who contributes on every rotation."
+    ),
+    LH = list(
+      icon  = "\U0001F6E1",
+      name  = "Defensive Anchor",
+      short = "Low Off / High Def",
+      desc  = "A dominant blocker who limits opponent attacks but isn't a consistent kill threat. Often a middle who specialises in net defence."
+    ),
+    HL = list(
+      icon  = "\u26A1",
+      name  = "Pure Attacker",
+      short = "High Off / Low Def",
+      desc  = "High kill efficiency with minimal defensive presence. A pin hitter who earns their keep through explosive offense alone."
+    ),
+    LL = list(
+      icon  = "\U0001F527",
+      name  = "Role Player",
+      short = "Low Off / Low Def",
+      desc  = "Below average on both dimensions. Likely a specialist in limited sets or a developing player still building consistency."
+    )
+  ),
+  back = list(
+    HH = list(
+      icon  = "\U0001F3AF",
+      name  = "Floor General",
+      short = "High Off / High Def",
+      desc  = "Drives offense through aggressive serving and anchors the pass. The complete back-row player who controls both sides of the ball."
+    ),
+    LH = list(
+      icon  = "\U0001F9F1",
+      name  = "Defensive Wall",
+      short = "Low Off / High Def",
+      desc  = "Elite passer and digger with minimal serving threat. The classic defensive specialist or libero who keeps the ball alive."
+    ),
+    HL = list(
+      icon  = "\U0001F525",
+      name  = "Serving Threat",
+      short = "High Off / Low Def",
+      desc  = "Aces create free points but reception is a liability. The serve-specialist brought in specifically to pressure opponents."
+    ),
+    LL = list(
+      icon  = "\U0001F331",
+      name  = "Developmental",
+      short = "Low Off / Low Def",
+      desc  = "Below average in both areas. Likely a younger player building consistency in passing, serving, and defensive reads."
+    )
+  )
+)
 
 custom_css <- "
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500;600&display=swap');
@@ -89,14 +168,13 @@ ui <- dashboardPage(
   )),
   dashboardSidebar(
     sidebarMenu(
-      menuItem("Position Comp", tabName="poscomp", icon=icon("chart-bar")),
-      menuItem("Scatter Plot",  tabName="scatter",  icon=icon("circle-dot")),
+      menuItem("Overview",      tabName="overview", icon=icon("house")),
+      menuItem("Position Comp", tabName="poscomp",  icon=icon("chart-bar")),
       menuItem("Radar Chart",   tabName="radar",    icon=icon("spider"))
     ),
     tags$hr(),
     tags$div(style="padding:0 10px;",
-      checkboxGroupInput("div_filter","Division",choices=c("Div 1","Div 2","Div 3"),selected="Div 1"),
-      selectInput("season_filter","Season",choices=rev(paste0(2020:2024,"-",2021:2025)),selected="2024-2025")
+      checkboxGroupInput("global_pos","Positions",choices=names(pos_labels),selected=names(pos_labels))
     ),
     tags$hr(),
     tags$div(class="text-muted",style="padding:4px 14px 12px;",tags$em("All stats shown per game (per GP)."),tags$br(),tags$br(),"Data: JeffreyRStevens/ncaavolleyballr")
@@ -117,8 +195,7 @@ ui <- dashboardPage(
                            selected="per_game", inline=TRUE),
               tags$hr(),
               selectInput("comp_stat","Statistic to Compare",choices=stat_choices,selected="Kills/G"),
-              radioButtons("comp_type","Summary Type",choices=c("Mean","Median"),selected="Mean",inline=TRUE),
-              checkboxGroupInput("comp_pos","Positions to Include",choices=names(pos_labels),selected=names(pos_labels))
+              radioButtons("comp_type","Summary Type",choices=c("Mean","Median"),selected="Mean",inline=TRUE)
           ),
           box(width=8, title="Position Comparison", status="info", solidHeader=TRUE,
               plotlyOutput("comp_plot", height=400))
@@ -129,19 +206,64 @@ ui <- dashboardPage(
         )
       ),
 
-      tabItem("scatter",
+      tabItem("overview",
         fluidRow(
-          box(width=3, status="primary",
-              selectInput("sc_x","X Axis",choices=stat_choices,selected="Kills/G"),
-              selectInput("sc_y","Y Axis",choices=stat_choices,selected="Digs/G"),
-              selectInput("sc_col","Color By (metric)",choices=stat_choices,selected="PTS/G"),
-              tags$p(class="text-muted",style="font-size:11px;margin-top:6px;",tags$em("Shape = Position")),
-              tags$hr(),
-              checkboxGroupInput("sc_pos","Positions",choices=names(pos_labels),selected=names(pos_labels)),
-              numericInput("sc_min_gp","Min Games Played",value=10,min=0)
-          ),
-          box(width=9, title="Player Scatter — per-game stats", status="info", solidHeader=TRUE,
-              plotlyOutput("scatter_plot", height=500))
+          box(width=12,
+              title="Weighted Offensive vs Defensive Value — All Positions",
+              status="info", solidHeader=TRUE,
+              plotlyOutput("scatter_combined", height=560))
+        ),
+        fluidRow(
+          box(width=12, title="Player Archetypes",
+              status="primary", solidHeader=TRUE,
+              collapsible=TRUE, collapsed=TRUE,
+              fluidRow(
+                column(6,
+                  tags$p(style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#00d4b4;margin-bottom:10px;",
+                         "Front Row — OH / MB / OPP"),
+                  tags$div(style="display:grid;grid-template-columns:1fr 1fr;gap:10px;",
+                    tags$div(style="background:rgba(30,42,62,0.7);border:1px solid #2a3a52;border-left:3px solid #f5c518;border-radius:8px;padding:10px 14px;",
+                      tags$div(style="font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:#f0f4ff;margin-bottom:3px;","🏆 Complete Weapon"),
+                      tags$div(style="font-size:10px;color:#4a5f7a;font-style:italic;margin-bottom:5px;","High Off / High Def"),
+                      tags$div(style="font-size:12px;color:#8fa3c0;line-height:1.4;","Kills efficiently and shuts down opponents at the net. The two-way elite attacker.")),
+                    tags$div(style="background:rgba(30,42,62,0.7);border:1px solid #2a3a52;border-left:3px solid #60a5fa;border-radius:8px;padding:10px 14px;",
+                      tags$div(style="font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:#f0f4ff;margin-bottom:3px;","🛡 Defensive Anchor"),
+                      tags$div(style="font-size:10px;color:#4a5f7a;font-style:italic;margin-bottom:5px;","Low Off / High Def"),
+                      tags$div(style="font-size:12px;color:#8fa3c0;line-height:1.4;","Dominant blocker who limits attacks but isn't a consistent kill threat.")),
+                    tags$div(style="background:rgba(30,42,62,0.7);border:1px solid #2a3a52;border-left:3px solid #ff5f57;border-radius:8px;padding:10px 14px;",
+                      tags$div(style="font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:#f0f4ff;margin-bottom:3px;","⚡ Pure Attacker"),
+                      tags$div(style="font-size:10px;color:#4a5f7a;font-style:italic;margin-bottom:5px;","High Off / Low Def"),
+                      tags$div(style="font-size:12px;color:#8fa3c0;line-height:1.4;","High kill efficiency with minimal defensive presence. Lives through explosive offense.")),
+                    tags$div(style="background:rgba(30,42,62,0.7);border:1px solid #2a3a52;border-left:3px solid #565a5c;border-radius:8px;padding:10px 14px;",
+                      tags$div(style="font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:#f0f4ff;margin-bottom:3px;","🔧 Role Player"),
+                      tags$div(style="font-size:10px;color:#4a5f7a;font-style:italic;margin-bottom:5px;","Low Off / Low Def"),
+                      tags$div(style="font-size:12px;color:#8fa3c0;line-height:1.4;","Below average on both dimensions. Specialist or developing player in limited sets."))
+                  )
+                ),
+                column(6,
+                  tags$p(style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#9b5de5;margin-bottom:10px;",
+                         "Back Row — S / DS / L"),
+                  tags$div(style="display:grid;grid-template-columns:1fr 1fr;gap:10px;",
+                    tags$div(style="background:rgba(30,42,62,0.7);border:1px solid #2a3a52;border-left:3px solid #f5c518;border-radius:8px;padding:10px 14px;",
+                      tags$div(style="font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:#f0f4ff;margin-bottom:3px;","🎯 Floor General"),
+                      tags$div(style="font-size:10px;color:#4a5f7a;font-style:italic;margin-bottom:5px;","High Off / High Def"),
+                      tags$div(style="font-size:12px;color:#8fa3c0;line-height:1.4;","Drives offense through aggressive serving and anchors the pass. Controls both sides.")),
+                    tags$div(style="background:rgba(30,42,62,0.7);border:1px solid #2a3a52;border-left:3px solid #60a5fa;border-radius:8px;padding:10px 14px;",
+                      tags$div(style="font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:#f0f4ff;margin-bottom:3px;","🧱 Defensive Wall"),
+                      tags$div(style="font-size:10px;color:#4a5f7a;font-style:italic;margin-bottom:5px;","Low Off / High Def"),
+                      tags$div(style="font-size:12px;color:#8fa3c0;line-height:1.4;","Elite passer and digger with minimal serving threat. The classic libero.")),
+                    tags$div(style="background:rgba(30,42,62,0.7);border:1px solid #2a3a52;border-left:3px solid #ff5f57;border-radius:8px;padding:10px 14px;",
+                      tags$div(style="font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:#f0f4ff;margin-bottom:3px;","🔥 Serving Threat"),
+                      tags$div(style="font-size:10px;color:#4a5f7a;font-style:italic;margin-bottom:5px;","High Off / Low Def"),
+                      tags$div(style="font-size:12px;color:#8fa3c0;line-height:1.4;","Aces create points but reception is a liability. The dedicated serve specialist.")),
+                    tags$div(style="background:rgba(30,42,62,0.7);border:1px solid #2a3a52;border-left:3px solid #565a5c;border-radius:8px;padding:10px 14px;",
+                      tags$div(style="font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:#f0f4ff;margin-bottom:3px;","🌱 Developmental"),
+                      tags$div(style="font-size:10px;color:#4a5f7a;font-style:italic;margin-bottom:5px;","Low Off / Low Def"),
+                      tags$div(style="font-size:12px;color:#8fa3c0;line-height:1.4;","Below average in both areas. Building consistency in passing, serving, and reads."))
+                  )
+                )
+              )
+          )
         )
       ),
 
@@ -151,10 +273,6 @@ ui <- dashboardPage(
               checkboxGroupInput("radar_stats","Stats to Include",
                                  choices=stat_choices,
                                  selected=c("Kills/G","Assists/G","Digs/G","Block Solos/G","Aces/G","Hit Pct")),
-              tags$hr(),
-              checkboxGroupInput("radar_pos","Positions to Show",
-                                 choices=names(pos_labels),
-                                 selected=names(pos_labels)),
               tags$hr(),
               radioButtons("radar_summary","Summarise by",
                            choices=c("Mean","Median"),selected="Mean",inline=TRUE),
@@ -181,7 +299,9 @@ ui <- dashboardPage(
                   actionButton("custom_reset","Reset values",
                                style="background:#1e2a3e;color:#8fa3c0;border:1px solid #2a3a52;border-radius:6px;font-family:\'Barlow Condensed\',sans-serif;font-size:12px;letter-spacing:1px;width:100%;")
                 )
-              )
+              ),
+              tags$hr(),
+              uiOutput("player_comp")
           )
         )
       )
@@ -210,9 +330,7 @@ server <- function(input, output, session) {
 
   filtered <- reactive({
     df <- raw_data(); req(nrow(df) > 0)
-    if (length(input$div_filter) > 0) df <- df[df$Division %in% input$div_filter, ]
-    if (!is.null(input$season_filter) && input$season_filter != "All") df <- df[df$Season == input$season_filter, ]
-    df[df$Pos %in% names(pos_labels), ]
+    df[df$Pos %in% input$global_pos, ]
   })
 
   col_name <- function(label) unname(stat_col_map[label])
@@ -220,8 +338,8 @@ server <- function(input, output, session) {
   # Players by position count chart
   output$pos_count_plot <- renderPlotly({
     df <- filtered()
-    if (length(input$comp_pos) == 0) return(NULL)
-    df <- df[df$Pos %in% input$comp_pos, ]
+    if (length(input$global_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$global_pos, ]
     count_df <- df %>% count(Pos) %>% arrange(desc(n)) %>% mutate(color = pos_colors[Pos])
     p <- plot_ly(count_df, x=~reorder(Pos,-n), y=~n, type="bar",
                  marker=list(color=~color, line=list(color="rgba(0,0,0,0)",width=0)),
@@ -234,8 +352,8 @@ server <- function(input, output, session) {
   # Position comparison bar chart
   output$comp_plot <- renderPlotly({
     df <- filtered()
-    if (length(input$comp_pos) == 0) return(NULL)
-    df <- df[df$Pos %in% input$comp_pos, ]
+    if (length(input$global_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$global_pos, ]
     cname <- col_name(input$comp_stat)
     is_rate <- cname == "Hit Pct"
     if (input$comp_scale == "total" && !is_rate) {
@@ -260,8 +378,8 @@ server <- function(input, output, session) {
   # Violin plot
   output$violin_plot <- renderPlotly({
     df <- filtered()
-    if (length(input$comp_pos) == 0) return(NULL)
-    df <- df[df$Pos %in% input$comp_pos, ]
+    if (length(input$global_pos) == 0) return(NULL)
+    df <- df[df$Pos %in% input$global_pos, ]
     cname <- col_name(input$comp_stat)
     is_rate <- cname == "Hit Pct"
     if (input$comp_scale == "total" && !is_rate) {
@@ -288,37 +406,93 @@ server <- function(input, output, session) {
     plotly_layout(p, xaxis=list(title=""), yaxis=list(title=y_label), showlegend=FALSE, violingap=0.05, violingroupgap=0)
   })
 
-  # Scatter plot
-  output$scatter_plot <- renderPlotly({
-    df <- filtered()
-    if (length(input$sc_pos) == 0) return(NULL)
-    df <- df[df$Pos %in% input$sc_pos, ]
-    df <- df[!is.na(df$GP) & df$GP >= input$sc_min_gp, ]
-    cx <- col_name(input$sc_x); cy <- col_name(input$sc_y); cz <- col_name(input$sc_col)
-    df <- df[!is.na(df[[cx]]) & !is.na(df[[cy]]) & !is.na(df[[cz]]), ]
-    pos_symbols <- c("OH"="circle","MB"="square","S"="triangle-up","OPP"="diamond","DS"="cross","L"="star")
-    col_range <- range(df[[cz]], na.rm=TRUE)
-    positions <- sort(unique(df$Pos))
+  # Front/back row position groups
+
+  front_row <- c("OH", "MB", "OPP")
+  back_row  <- c("S", "DS", "L")
+
+  # Shared plot-building helper
+  make_scatter <- function(df_sub, show_means=TRUE, show_quads=TRUE, x_range=NULL, y_range=NULL, row_group=NULL) {
+    if (is.null(df_sub) || nrow(df_sub) == 0) return(plot_ly() %>% layout(title="No data"))
+
+    pos_symbols <- c("OH"="circle","MB"="square","S"="triangle-up",
+                     "OPP"="diamond","DS"="cross","L"="star")
+
+    mean_wOV <- mean(df_sub$wOV, na.rm=TRUE)
+    mean_wDV <- mean(df_sub$wDV, na.rm=TRUE)
+
+    positions <- sort(unique(df_sub$Pos))
     p <- plot_ly(type="scatter", mode="markers")
-    for (i in seq_along(positions)) {
-      pos <- positions[i]; sub <- df[df$Pos==pos,]
-      if (nrow(sub)==0) next
-      p <- add_trace(p, data=sub, x=~get(cx), y=~get(cy), name=pos, legendgroup=pos, showlegend=TRUE,
-                     text=~paste0("<b>",Player,"</b>","<br>",Team," \u00b7 ",Pos," \u00b7 ",Yr,
-                                  "<br>",input$sc_x,": <b>",round(get(cx),3),"</b>",
-                                  "<br>",input$sc_y,": <b>",round(get(cy),3),"</b>",
-                                  "<br>",input$sc_col,": <b>",round(get(cz),3),"</b>"),
-                     hoverinfo="text",
-                     marker=list(symbol=pos_symbols[[pos]], color=~get(cz),
-                                 colorscale=list(c(0,"#0a1628"),c(0.25,"#0d4f8c"),c(0.5,"#00d4b4"),c(0.75,"#f5c518"),c(1,"#ff5f57")),
-                                 cmin=col_range[1], cmax=col_range[2], showscale=(i==1),
-                                 colorbar=list(title=list(text=input$sc_col,font=list(family="Barlow Condensed",size=12,color="#8fa3c0")),
-                                               tickfont=list(family="Barlow",size=10,color="#8fa3c0"),
-                                               bgcolor="rgba(22,29,46,0.8)",bordercolor="rgba(42,58,82,0.8)",borderwidth=1,thickness=14),
-                                 size=9, opacity=0.85, line=list(width=1,color="rgba(255,255,255,0.2)")))
+    for (pos in positions) {
+      sub <- df_sub[df_sub$Pos == pos, ]
+      if (nrow(sub) == 0) next
+      p <- add_trace(p,
+        data=sub, x=~wOV, y=~wDV,
+        name=pos, legendgroup=pos, showlegend=TRUE,
+        text=~paste0("<b>",Player,"</b>",
+                     "<br>",Team," · ",Pos," · ",Yr,
+                     "<br>wOV: <b>",round(wOV,3),"</b>",
+                     "<br>wDV: <b>",round(wDV,3),"</b>",
+                     "<br>Sets: <b>",S_num,"</b>"),
+        hoverinfo="text",
+        marker=list(symbol=pos_symbols[[pos]], color=pos_colors[[pos]],
+                    size=8, opacity=0.75,
+                    line=list(width=0.5, color="rgba(255,255,255,0.25)"))
+      )
     }
-    plotly_layout(p, xaxis=list(title=input$sc_x), yaxis=list(title=input$sc_y),
-                  legend=list(title=list(text="<b>Shape = Position</b>",font=list(family="Barlow Condensed",size=12,color="#8fa3c0"))))
+
+    if (isTRUE(show_means)) {
+      ref_x <- if (!is.null(x_range)) x_range else range(df_sub$wOV, na.rm=TRUE)
+      ref_y <- if (!is.null(y_range)) y_range else range(df_sub$wDV, na.rm=TRUE)
+      p <- p %>%
+        add_segments(x=ref_x[1], xend=ref_x[2], y=mean_wDV, yend=mean_wDV,
+                     line=list(color="rgba(255,95,87,0.6)",width=1.5,dash="dash"),
+                     showlegend=FALSE, hoverinfo="none", inherit=FALSE) %>%
+        add_segments(x=mean_wOV, xend=mean_wOV, y=ref_y[1], yend=ref_y[2],
+                     line=list(color="rgba(255,95,87,0.6)",width=1.5,dash="dash"),
+                     showlegend=FALSE, hoverinfo="none", inherit=FALSE)
+    }
+
+    annotations <- list()
+    if (isTRUE(show_quads)) {
+      xr <- if (!is.null(x_range)) x_range else range(df_sub$wOV, na.rm=TRUE)
+      yr <- if (!is.null(y_range)) y_range else range(df_sub$wDV, na.rm=TRUE)
+      qs <- list(family="Barlow Condensed, sans-serif", size=10, color="rgba(143,163,192,0.4)")
+      quad_labels <- if (!is.null(row_group) && row_group == "front") {
+        c("🏆 Complete Weapon", "🛡 Defensive Anchor", "⚡ Pure Attacker", "🔧 Role Player")
+      } else if (!is.null(row_group) && row_group == "back") {
+        c("🎯 Floor General", "🧱 Defensive Wall", "🔥 Serving Threat", "🌱 Developmental")
+      } else {
+        c("High Off / High Def", "Low Off / High Def", "High Off / Low Def", "Low Off / Low Def")
+      }
+      annotations <- list(
+        list(x=xr[2], y=yr[2], text=quad_labels[1], xanchor="right", yanchor="top",    showarrow=FALSE, font=qs),
+        list(x=xr[1], y=yr[2], text=quad_labels[2], xanchor="left",  yanchor="top",    showarrow=FALSE, font=qs),
+        list(x=xr[2], y=yr[1], text=quad_labels[3], xanchor="right", yanchor="bottom", showarrow=FALSE, font=qs),
+        list(x=xr[1], y=yr[1], text=quad_labels[4], xanchor="left",  yanchor="bottom", showarrow=FALSE, font=qs)
+      )
+    }
+
+    xaxis_cfg <- list(title="wOV (weighted Offensive Value per set)")
+    yaxis_cfg <- list(title="wDV (weighted Defensive Value per set)")
+    if (!is.null(x_range)) xaxis_cfg$range <- x_range
+    if (!is.null(y_range)) yaxis_cfg$range <- y_range
+
+    plotly_layout(p,
+      xaxis=xaxis_cfg, yaxis=yaxis_cfg, annotations=annotations,
+      legend=list(title=list(text="<b>Position</b>",
+                             font=list(family="Barlow Condensed",size=12,color="#8fa3c0")))
+    )
+  }
+
+  # Combined scatter — all positions, used on overview tab
+  output$scatter_combined <- renderPlotly({
+    df <- filtered()
+    df$S_num <- as.numeric(df$S)
+    df <- df[!is.na(df$S_num) & df$S_num >= 20, ]
+    df <- df[!is.na(df$wOV) & !is.na(df$wDV), ]
+    if (nrow(df) == 0) return(NULL)
+    make_scatter(df, show_means=TRUE, show_quads=TRUE)
   })
 
   # ── Radar chart ─────────────────────────────────────────────
@@ -351,9 +525,120 @@ server <- function(input, output, session) {
     }
   })
 
+  # ── "This player is like ___" comparison ────────────────────────────────────
+  output$player_comp <- renderUI({
+    req(length(input$radar_stats) >= 1)
+
+    # Collect custom values — need at least one non-NA to compare
+    custom_vals <- sapply(input$radar_stats, function(lbl) {
+      id <- paste0("custom_", gsub("[^A-Za-z0-9]", "_", lbl))
+      val <- input[[id]]
+      if (is.null(val) || is.na(val)) NA_real_ else as.numeric(val)
+    })
+    if (all(is.na(custom_vals))) return(NULL)
+
+    df       <- filtered()
+    cols     <- unname(stat_col_map[input$radar_stats])
+    stat_lbl <- input$radar_stats
+
+    # Keep only players with data for all selected stats and min sets filter
+    df$S_num <- as.numeric(df$S)
+    df <- df[!is.na(df$S_num) & df$S_num >= 10, ]
+    for (col in cols) df <- df[!is.na(df[[col]]), ]
+    if (nrow(df) == 0) return(NULL)
+
+    # Top 10 players by combined wOV + wDV (overall impact)
+    df$impact <- ifelse(is.na(df$wOV) | is.na(df$wDV), NA,
+                        df$wOV + df$wDV)
+    top10 <- df %>%
+      filter(!is.na(impact)) %>%
+      arrange(desc(impact)) %>%
+      slice_head(n = 10)
+    if (nrow(top10) == 0) return(NULL)
+
+    # For each stat, compute the scaling range across the full dataset
+    # (same approach as the radar scaling so distances are meaningful)
+    scale_ranges <- lapply(cols, function(col) range(df[[col]], na.rm=TRUE))
+
+    # Scale both the custom vector and each top-10 player to [0,1]
+    scale_vec <- function(vals) {
+      mapply(function(v, rng) {
+        if (is.na(v)) 0
+        else if (diff(rng) == 0) 0.5
+        else max(0, min(1, (v - rng[1]) / diff(rng)))
+      }, vals, scale_ranges)
+    }
+
+    custom_scaled <- scale_vec(custom_vals)
+
+    # Only use stats where the user actually entered a value
+    active_idx <- which(!is.na(custom_vals))
+
+    dists <- sapply(seq_len(nrow(top10)), function(i) {
+      player_vals <- as.numeric(top10[i, cols])
+      player_scaled <- scale_vec(player_vals)
+      # Euclidean distance on the active dimensions only
+      sqrt(sum((custom_scaled[active_idx] - player_scaled[active_idx])^2))
+    })
+
+    best_idx    <- which.min(dists)
+    best_player <- top10$Player[best_idx]
+    best_team   <- top10$Team[best_idx]
+    best_pos    <- top10$Pos[best_idx]
+    best_dist   <- round(dists[best_idx], 3)
+    best_wOV    <- round(top10$wOV[best_idx], 3)
+    best_wDV    <- round(top10$wDV[best_idx], 3)
+    clr         <- pos_colors[[best_pos]]
+
+    # Build the display
+    label <- if (nchar(trimws(input$custom_label)) > 0) trimws(input$custom_label) else "This player"
+
+    tags$div(
+      style="padding:4px 0;",
+      tags$p(
+        style="font-family:'Barlow Condensed',sans-serif;font-size:13px;color:#8fa3c0;margin-bottom:8px;letter-spacing:0.5px;",
+        tags$em(paste0('"', label, '"'), " is most similar to:")
+      ),
+      tags$div(
+        style=paste0(
+          "background:rgba(22,29,46,0.8);border:1px solid ",clr,";border-left:4px solid ",clr,";",
+          "border-radius:8px;padding:12px 16px;margin-bottom:6px;"
+        ),
+        tags$div(
+          style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;",
+          tags$span(
+            style=paste0("font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:800;color:",clr,";letter-spacing:0.5px;"),
+            best_player
+          ),
+          tags$span(
+            style="font-family:'Barlow Condensed',sans-serif;font-size:13px;color:#8fa3c0;",
+            paste0(best_team, " \u00b7 ", best_pos)
+          )
+        ),
+        tags$div(
+          style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;",
+          tags$span(
+            style="font-family:'Barlow',sans-serif;font-size:11px;color:#4a5f7a;",
+            paste0("wOV: ", best_wOV, "  \u00b7  wDV: ", best_wDV)
+          ),
+          tags$span(
+            style="font-family:'Barlow',sans-serif;font-size:11px;color:#4a5f7a;",
+            paste0("distance: ", best_dist)
+          )
+        )
+      ),
+      tags$p(
+        style="font-family:'Barlow',sans-serif;font-size:11px;color:#4a5f7a;margin-top:4px;",
+        paste0("Compared against top 10 players by combined impact score. ",
+               length(active_idx), " of ", length(input$radar_stats),
+               " stat(s) used in comparison.")
+      )
+    )
+  })
+
   output$radar_plot <- renderPlotly({
     df <- filtered()
-    req(length(input$radar_stats) >= 3, length(input$radar_pos) >= 1)
+    req(length(input$radar_stats) >= 3, length(input$global_pos) >= 1)
     stat_cols  <- stat_col_map[input$radar_stats]
     summary_fn <- if (input$radar_summary == "Mean") mean else median
     radar_df <- df %>%
@@ -368,7 +653,7 @@ server <- function(input, output, session) {
         (radar_df[[col]] - rng[1]) / diff(rng)
     }
     # Filter to only the positions the user has selected
-    radar_df <- radar_df[radar_df$Pos %in% input$radar_pos, ]
+    radar_df <- radar_df[radar_df$Pos %in% input$global_pos, ]
     req(nrow(radar_df) >= 1)
     theta_labels <- input$radar_stats
     # Use dashboard palette to stay consistent with other charts
@@ -474,4 +759,113 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui, server)
+```
+
+```{r}
+library(tidyverse)
+library(ncaavolleyballr)
+
+base_url <- "https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/"
+years <- 2020:2024
+set.seed(1)
+
+vball <- map_dfr(years, function(yr) {
+  url <- paste0(base_url, "wvb_playerseason_div1_", yr, ".csv")
+  read_csv(url, show_col_types = FALSE) |>
+    mutate(season = yr)
+})
+
+vb_clean <- vball %>%
+  mutate(
+    across(
+      c(Kills, `Total Attacks`, Assists, Aces, Digs, TB,
+        PTS, Errors, SErr, BErr, RErr, `Block Assists`, `Block Solos`),
+      ~ replace_na(., 0)
+    )
+  ) %>%
+  filter(S > 0) %>%
+  mutate(
+    kills_per_set       = Kills / S,
+    attacks_per_set     = `Total Attacks` / S,
+    assists_per_set     = Assists / S,
+    aces_per_set        = Aces / S,
+    digs_per_set        = Digs / S,
+    blocks_per_set      = TB / S,
+    points_per_set      = PTS / S,
+    errors_per_set      = Errors / S,
+    serve_err_per_set   = SErr / S,
+    block_err_per_set   = BErr / S,
+    receive_err_per_set = RErr / S,
+    bsolo_per_set       = `Block Solos` / S,
+    bassists_per_set    = `Block Assists` / S,
+    attack_volume       = `Total Attacks` / S,
+    block_impact        = TB / S
+  )
+
+# ── Model coefficients (from lm fits in original script) ─────────────────────
+vb_new <- vb_clean %>%
+  mutate(
+    wOV =  0.133197 * kills_per_set +
+          -0.063021 * errors_per_set +
+           0.031552 * aces_per_set,
+    wDV = -0.009673 * digs_per_set +
+          -0.123784 * receive_err_per_set +
+           0.027278 * bsolo_per_set +
+           0.052643 * bassists_per_set +
+          -0.011022 * block_err_per_set
+  )
+
+# ── Row group assignment ──────────────────────────────────────────────────────
+# Consolidate MH -> MB and RS -> OPP to match the dashboard groupings
+front_positions <- c("OH", "MB", "MH", "OPP", "RS")
+back_positions  <- c("S", "DS", "L", "LS")
+
+vb_new <- vb_new %>%
+  mutate(
+    row_group = case_when(
+      Pos %in% front_positions ~ "Front Row (OH / MB / OPP)",
+      Pos %in% back_positions  ~ "Back Row (S / DS / L)",
+      TRUE                     ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(row_group))
+
+mean_wOV <- mean(vb_new$wOV, na.rm = TRUE)
+mean_wDV <- mean(vb_new$wDV, na.rm = TRUE)
+
+# ── Position color palette (consistent with dashboard) ───────────────────────
+pos_colors <- c(
+  "OH"  = "#00d4b4",
+  "MB"  = "#f5c518",
+  "MH"  = "#f5c518",   # same as MB (merged group)
+  "S"   = "#9b5de5",
+  "OPP" = "#ff5f57",
+  "RS"  = "#ff5f57",   # same as OPP (merged group)
+  "DS"  = "#60a5fa",
+  "L"   = "#f97316",
+  "LS"  = "#f97316"
+)
+
+# ── Plot: faceted by row group ────────────────────────────────────────────────
+p <- ggplot(vb_new, aes(x = wOV, y = wDV, color = Pos)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  geom_vline(xintercept = mean_wOV, linetype = "dashed", color = "#ff5f57", linewidth = 0.6) +
+  geom_hline(yintercept = mean_wDV, linetype = "dashed", color = "#ff5f57", linewidth = 0.6) +
+  facet_wrap(~ row_group, scales = "free") +
+  scale_color_manual(values = pos_colors, name = "Position") +
+  labs(
+    title    = "Weighted Offensive vs Defensive Value by Row Group",
+    subtitle = "Dashed lines = overall mean  |  Div I, 2020–2024",
+    x        = "wOV (weighted Offensive Value per set)",
+    y        = "wDV (weighted Defensive Value per set)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text       = element_text(face = "bold", size = 11),
+    legend.position  = "bottom",
+    legend.title     = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+print(p)
 ```
