@@ -1,0 +1,57 @@
+output$similar_player <- renderUI({
+  ps   <- custom_ps()
+  pos  <- input$cp_position
+  arch <- custom_archetype()
+  if (is.null(ps) || is.na(arch)) {
+    return(tags$p(style = "color:#aaa; font-style:italic;",
+                  "Best player in archetype will appear here."))
+  }
+
+  # Variables for this position excluding height
+  vars <- position_vars[[pos]]
+  vars <- vars[vars != "height_inches"]
+
+  # Filter to archetype
+  df_arch <- wvb2 %>%
+    filter(position == pos, archetype == arch) %>%
+    select(player_name, team_name, player_year, season, all_of(vars)) %>%
+    drop_na()
+
+  if (nrow(df_arch) == 0) {
+    return(tags$p("No players found."))
+  }
+
+  # Compute percentile rank for each variable within the archetype
+  df_ranked <- df_arch %>%
+    mutate(across(all_of(vars), ~ percent_rank(.), .names = "pct_{.col}"))
+
+  # Average percentile across all vars
+  pct_cols <- paste0("pct_", vars)
+  df_ranked <- df_ranked %>%
+    mutate(avg_pct = rowMeans(across(all_of(pct_cols)), na.rm = TRUE))
+
+  best <- df_ranked %>%
+    slice_max(order_by = avg_pct, n = 1, with_ties = FALSE)
+
+  tags$div(
+    tags$p(style = "font-size:13px; color:#aaa; margin-bottom:4px;",
+           "Best player in this archetype:"),
+    tags$p(style = "font-size:17px; font-weight:700; color:#00d4b4;",
+           best$player_name),
+    tags$p(style = "font-size:13px; color:#ccc;",
+           sprintf("A %s from %s (%s, %s)",
+                   pos_labels[[pos]],
+                   best$team_name,
+                   best$player_year,
+                   best$season)),
+    tags$p(style = "font-size:12px; color:#aaa;",
+           sprintf("Avg percentile rank within archetype: %d%%",
+                   round(best$avg_pct * 100)))
+  )
+})
+
+
+
+
+
+
